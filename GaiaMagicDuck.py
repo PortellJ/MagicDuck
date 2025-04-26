@@ -4,6 +4,7 @@ it should also be applicable to other astronomical catalogues
 or scientific data tables in general.
 It's based on a DuckDB persistent database file that must have
 been prepared beforehand.
+Jordi Portell (jportell@icc.ub.edu)
 """
 
 import duckdb
@@ -54,12 +55,14 @@ class GaiaMagicDuck:
             self.con.sql("set temp_directory = " + tmpdir)
         self.maintable = maintable
         self.con.sql("desc " + self.maintable).show(max_rows=300)
-        
-        # Define some constants that can help us later
-        # For the query to get a skymap
-        self.SkymapBins = "floor(ra*10.0)/10.0 as raq, floor(dec*10.0)/10.0 as decq"
-        # To get 5-p or 6-p sources
-        self.is_agis56p = "(astrometric_params_solved>=31)"
+
+    def attach(self, dbfile, alias, maintable):
+        """
+        Attach to an additional DuckDB file identifying it with 'alias'
+        and describe the 'maintable' indicated.
+        """
+        self.con.sql("attach '" + dbfile + "' as " + alias + "(READ_ONLY)")
+        self.con.sql("desc " + alias + "." + maintable).show(max_rows=300)
 
 
     def _hammer_trf(self, lon, lat):
@@ -78,7 +81,7 @@ class GaiaMagicDuck:
         """
         return "(round((" + name + ") * " + str(frac) + ") / " + str(frac) + ")"
 
-    
+
     def quantlog(self, name, frac):
         """
         Get a string like "(round(log(name)*frac)/frac)"
@@ -91,8 +94,8 @@ class GaiaMagicDuck:
         Get a string like "(round(log(name+off)*frac)/frac)"
         """
         return "(round(log(" + name + "+" + str(off) + ") * " + str(frac) + ") / " + str(frac) + ")"
-    
-    
+
+
     def qget(self, sel, cond, groupby=None, extra=None, prev=None):
         """
         Run a 'generic' query and get the dataframe (or just show the result, for e.g. "select count").
@@ -114,8 +117,13 @@ class GaiaMagicDuck:
         # Show the query we've composed, for reference
         print("Running query: " + query)
         return self.con.sql(query)
-    
-    
+
+
+    # TODO:
+    # Add a function set_radec() or something like this,
+    # allowing to specify (1) the names of RA/DEC (ra, Alpha, dec, Delta, raq/decq, etc.)
+    # and (2) whether they are 'quantized' (to speedup things) and by how much.
+
     def qskymap(self, sel, cond):
         """
         Run a query to get a skymap.
@@ -133,10 +141,11 @@ class GaiaMagicDuck:
         query += " group by qra,qdec"
         print("Running query: " + query)
         return self.con.sql(query)
-    
-    
+
+
     def plotsky(self, radec, pmap, reducefunc, binscale, clabel, title,
-                cmin = None, cmax = None, cmap = 'turbo', tofile = None):
+                cmin = None, cmax = None, cmap = 'turbo', tofile = None,
+                doecliptic = False, rot = 0):
         """
         Plot a skymap in Galactic coordinates.
         
@@ -161,6 +170,10 @@ class GaiaMagicDuck:
             (you can add "_r" to reverse the map)
         tofile : string
             You can indicate here a PNG filename to save the figure *instead* of showing it.
+        doecliptic : bool
+            True to use Ecliptic coordinates, False for Galactic
+        rot : int
+            You can indicate the degrees that you want to rotate the skymap (just for Galactic, along 'l')
         """
         import matplotlib.style as mplstyle
         print("Mean of values: ", np.mean(pmap.values))
@@ -172,11 +185,17 @@ class GaiaMagicDuck:
         print("Getting coords...")
         # Get the coordinates and convert them to Galactic
         coords = SkyCoord(ra = radec['qra'].values * u.deg, dec = radec['qdec'].values * u.deg, frame='icrs')
-        galactic_coords = coords.galactic
-        l_rad = -(galactic_coords.l.wrap_at(180 * u.deg).radian)
-        b_rad = galactic_coords.b.radian
+        if (doecliptic):
+            newcoords = coords.barycentrictrueecliptic
+            l_or_lambda = newcoords.lon.wrap_at(180 * u.deg).radian
+            b_or_beta = newcoords.lat.radian
+        else:
+            newcoords = coords.galactic
+            l_shifted = newcoords.l + rot * u.deg
+            l_or_lambda = -(l_shifted.wrap_at(180 * u.deg).radian)
+            b_or_beta = newcoords.b.radian
         print("Transforming to Hammer...")
-        l_rad_tr, b_rad_tr = self._hammer_trf(l_rad, b_rad)
+        l_rad_tr, b_rad_tr = self._hammer_trf(l_or_lambda, b_or_beta)
         print("Creating figure...")
         # Create the figure with Hammer projection (using the golden ratio)
         plt.figure(figsize=(16.18, 10))
@@ -198,8 +217,8 @@ class GaiaMagicDuck:
             print("Showing...")
             plt.show()
         print("Done!")
-    
-    
+
+
     def qdenmed(self, x, xres, xname, y, yres, yname, cond, logx=False, logy=False, offx=0.0, offy=0.0):
         """
         Run a query (actually 2 queries) to get a density plot plus a running median.
