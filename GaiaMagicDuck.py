@@ -55,6 +55,12 @@ class GaiaMagicDuck:
             self.con.sql("set temp_directory = " + tmpdir)
         self.maintable = maintable
         self.con.sql("desc " + self.maintable).show(max_rows=300)
+        # By default, define 'ra' and 'dec' for the skymap queries
+        self.ra = 'ra'
+        self.dec = 'dec'
+        # Also, indicate that they are not quantized
+        self.radecq = 1.0
+
 
     def attach(self, dbfile, alias, maintable):
         """
@@ -119,10 +125,17 @@ class GaiaMagicDuck:
         return self.con.sql(query)
 
 
-    # TODO:
-    # Add a function set_radec() or something like this,
-    # allowing to specify (1) the names of RA/DEC (ra, Alpha, dec, Delta, raq/decq, etc.)
-    # and (2) whether they are 'quantized' (to speedup things) and by how much.
+    def setradec(self, ra, dec, q):
+        """
+        Set the RA and DEC strings and their quantization (if any)
+        ra : string (e.g. 'ra' or 'Alpha')
+        dec : string
+        q : 1.0 for no quantization; otherwise, something like 10.0 or 12.0
+        """
+        self.ra = ra
+        self.dec = dec
+        self.radecq = q
+
 
     def qskymap(self, sel, cond):
         """
@@ -132,9 +145,11 @@ class GaiaMagicDuck:
         'cond' is a standard SQL condition, as in the 'query' function.
         """
         # If we have the quantized fields:
-        # query = " select raq/12.0 as qra, decq/12.0 as qdec, "
-        # else:
-        query = " select floor(ra*12.0)/12.0 as qra, floor(dec*12.0)/12.0 as qdec, "
+        if (self.radecq != 1.0):
+            query = " select " + self.ra + "/" + str(self.radecq) + " as qra, \
+                    " + self.dec + "/" + str(self.radecq) + " as qdec, "
+        else:
+            query = " select floor(" + self.ra + "*12.0)/12.0 as qra, floor(" + self.dec + "*12.0)/12.0 as qdec, "
         query += sel + " from " + self.maintable
         if (cond != None):
             query += " where " + cond
