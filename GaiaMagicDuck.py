@@ -53,6 +53,7 @@ class GaiaMagicDuck:
         self.con.sql("set memory_limit = " + maxram)
         if tmpdir is not None:
             self.con.sql("set temp_directory = " + tmpdir)
+        print("DuckDB version: " + duckdb.__version__)
         self.maintable = maintable
         self.con.sql("desc " + self.maintable).show(max_rows=300)
         # By default, define 'ra' and 'dec' for the skymap queries
