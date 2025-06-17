@@ -4,23 +4,26 @@ it should also be applicable to other astronomical catalogues
 or scientific data tables in general.
 It's based on a DuckDB persistent database file that must have
 been prepared beforehand.
-Jordi Portell (jportell@icc.ub.edu)
+Jordi Portell i de Mora (jportell@icc.ub.edu)
 """
 
 import duckdb
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 import math as m
+import datashader as ds
+from datashader import transfer_functions as tf
 
 
 class GaiaMagicDuck:
     """
     "Magic Duck" for Gaia data tables.
     Jordi Portell (jportell@icc.ub.edu), 2025
-    
+
     This class provides functions to easily query huge tables
     using DuckDB and then generate statistics, plots or skymaps.
     It should also be applicable to other astronomical catalogues
@@ -34,16 +37,16 @@ class GaiaMagicDuck:
         String with the DuckDB filename (and full path) to be used.
     maintable : str
         Main DB table to be used (e.g. 'gaia_source')
-    threads : int
+    threads : int, optional
         Number of threads to be used by DuckDB.
-    maxram : str
-        Maximum RAM (e.g. '16GB') to be used by DuckDB.
-    tmpdir : str
+    maxram : str, optional
+        Maximum RAM (e.g. "'16GB'", beware with the quotation marks) to be used by DuckDB.
+    tmpdir : str, optional
         Path to the temporary folder to be used by DuckDB, useful
         for e.g. specifying a fast NVMe disk partition.
     """
 
-    def __init__(self, dbfile, maintable, threads = 4, maxram = '4GB', tmpdir = None):
+    def __init__(self, dbfile, maintable, threads = 2, maxram = "'4GB'", tmpdir = None):
         # Check that we've provided the necessary parameters
         if dbfile is None or maintable is None:
             raise AttributeError("dbfile and maintable must be provided.")
@@ -73,38 +76,31 @@ class GaiaMagicDuck:
         self.con.sql("desc " + alias + "." + maintable).show(max_rows=300)
 
 
-    def _hammer_trf(self, lon, lat):
-        """
-        Ancillary function to transform coordinates to a Hammer projection
-        """
-        deno = np.sqrt(1 + np.cos(lat) * np.cos(lon / 2))
-        x = (2 * np.sqrt(2) * np.cos(lat) * np.sin(lon / 2)) / deno
-        y = (np.sqrt(2) * np.sin(lat)) / deno
-        return x, y
-
-
     def quant(self, name, frac):
         """
-        Get a string like "(round(name*frac)/frac)"
+        Get a string like "(round(name*frac)/frac)", allowing to "quantize"
+        some value from a query (good for e.g. histograms to look cleaner)
         """
         return "(round((" + name + ") * " + str(frac) + ") / " + str(frac) + ")"
 
 
     def quantlog(self, name, frac):
         """
-        Get a string like "(round(log(name)*frac)/frac)"
+        Get a string like "(round(log(name)*frac)/frac)", so similar to
+        "quant" but already applying a log10
         """
         return "(round(log(" + name + ") * " + str(frac) + ") / " + str(frac) + ")"
 
 
     def quantlogoff(self, name, frac, off):
         """
-        Get a string like "(round(log(name+off)*frac)/frac)"
+        Get a string like "(round(log(name+off)*frac)/frac)", so similar to
+        "quantlog" but adding an offset, in case there can be zeroes or negative values.
         """
         return "(round(log(" + name + "+" + str(off) + ") * " + str(frac) + ") / " + str(frac) + ")"
 
 
-    def qget(self, sel, cond, groupby=None, extra=None, prev=None):
+    def qget(self, sel, cond=None, groupby=None, extra=None, prev=None):
         """
         Run a 'generic' query and get the dataframe (or just show the result, for e.g. "select count").
         Get a string like "select <sel> from <maintable> where <cond> [group by <groupby>]",
@@ -144,7 +140,7 @@ class GaiaMagicDuck:
         Run a query to get a skymap.
         'sel' must indicate what we want to get in each ra/dec bin: "count(*) as counts",
         "MEDIAN(value) as medval", etc.
-        'cond' is a standard SQL condition, as in the 'query' function.
+        'cond' is a standard SQL condition, as in the 'qget' function.
         """
         # If we have the quantized fields:
         if (self.radecq != 1.0):
@@ -160,12 +156,25 @@ class GaiaMagicDuck:
         return self.con.sql(query)
 
 
+    def _hammer_trf(self, lon, lat):
+        """
+        Ancillary function to transform coordinates to a Hammer projection,
+        for the plotsky() function.
+        """
+        deno = np.sqrt(1 + np.cos(lat) * np.cos(lon / 2))
+        x = (2 * np.sqrt(2) * np.cos(lat) * np.sin(lon / 2)) / deno
+        y = (np.sqrt(2) * np.sin(lat)) / deno
+        return x, y
+
+
     def plotsky(self, radec, pmap, reducefunc, binscale, clabel, title,
                 cmin = None, cmax = None, cmap = 'turbo', tofile = None,
                 doecliptic = False, rot = 0):
         """
-        Plot a skymap in Galactic coordinates.
-        
+        Plot a skymap in Galactic coordinates using Matplotlib.
+        It can be a bit slow (around 1 minute depending on the plot size,
+        number of bins retrieved from the query, etc.)
+
         Parameters
         ----------
         radec : dataframe
@@ -195,11 +204,11 @@ class GaiaMagicDuck:
         import matplotlib.style as mplstyle
         print("Mean of values: ", np.mean(pmap.values))
         print("Median of values: ", np.median(pmap.values))
-        rse = 0.390152 * ((np.percentile(pmap.values, 0.9)) - (np.percentile(pmap.values, 0.1)))
+        rse = 0.390152 * ((np.percentile(pmap.values, 90)) - (np.percentile(pmap.values, 10)))
         print("RSE of values: ", rse)
         print("Reducefunc of values: ", reducefunc(pmap.values))
         print("Count of values: ", np.sum(pmap.values))
-        print("Getting coords...")
+        print("Getting coordinates...")
         # Get the coordinates and convert them to Galactic
         coords = SkyCoord(ra = radec['qra'].values * u.deg, dec = radec['qdec'].values * u.deg, frame='icrs')
         if (doecliptic):
@@ -233,6 +242,161 @@ class GaiaMagicDuck:
         else:
             print("Showing...")
             plt.show()
+        print("Done!")
+
+
+    def _hammer_trf_ds(self, lon, lat):
+        """
+        Ancillary function,
+        same as _hammer_trf() but for the datashader-based plotsky.
+        """
+        deno = np.sqrt(1 + np.cos(lat) * np.cos(lon / 2))
+        # Clip to avoid division by zero at the poles of the projection
+        deno = np.maximum(deno, 1e-9)
+        x = (2 * np.cos(lat) * np.sin(lon / 2)) / deno
+        y = (np.sin(lat)) / deno
+        return x, y
+
+
+    def plotsky_ds(self, radec, pmap, redfunc='sum', binscale='linear',
+                           clabel=None, title=None, cmin=None, cmax=None, cmap='turbo',
+                           tofile=None, doecliptic=False, rot=0,
+                           raster_width=1600, fig_scale=1.0):
+        """
+        Plots a skymap in Galactic or Ecliptic coordinates using Datashader for high performance.
+
+        Parameters
+        ----------
+        radec : DataFrame
+            DataFrame with quantized coordinates, e.g., 'qra', 'qdec', and the value to plot.
+        pmap : array
+            Pixel map, i.e. values per ra/dec bin (in principle from the same dataframe), e.g. skymap['counts']
+        redfunc : string, optional
+            Reduce function to be used: 'mean' or 'sum' (see https://datashader.org/api.html#reductions)
+        binscale : string, optional
+            'cbrt' for cube root color scale, 'log' for logarithmic, or 'linear'.
+        clabel : string, optional
+            Label for the colorbar (e.g. 'source counts'). If not provided, no colorbar will be generated.
+        title : string, optional
+            Label for the plot title.
+        cmin, cmax : float, optional
+            Min/max values for the color scale. It will clamp the pmap values before plotting them.
+        cmap : string, optional
+            Matplotlib colormap name. Some recommended ones: 'turbo', 'Greys_r', 'inferno', 'gist_ncar'...
+            (you can add "_r" to reverse the map)
+        tofile : string, optional
+            PNG filename to save the figure instead of showing it.
+        doecliptic : bool, optional
+            True for Ecliptic coordinates, False for Galactic.
+        rot : float, optional
+            Rotation in degrees for Galactic longitude.
+        raster_width : int, optional
+            The width of the output raster image in pixels. Too high values for too few datapoints will lead to aliasing.
+        fig_scale : float, optional
+            The figure scale, to get larger (e.g. 2.0) or smaller (e.g. 0.5) plots.
+        """
+
+        # Print some info on the map received:
+        print("Mean of values: ", np.mean(pmap.values))
+        print("Median of values: ", np.median(pmap.values))
+        rse = 0.390152 * ((np.percentile(pmap.values, 90)) - (np.percentile(pmap.values, 10)))
+        print("RSE of values: ", rse)
+        print("Sum of values: ", np.sum(pmap.values))
+        print("Getting coordinates...")
+        coords = SkyCoord(ra=radec['qra'].values * u.deg,
+                        dec=radec['qdec'].values * u.deg,
+                        frame='icrs')
+        if doecliptic:
+            newcoords = coords.barycentrictrueecliptic
+            lon = newcoords.lon.wrap_at(180 * u.deg).radian
+            lat = newcoords.lat.radian
+        else:
+            newcoords = coords.galactic
+            l_shifted = newcoords.l + rot * u.deg
+            # The negation is important for the conventional sky-map orientation
+            lon = -(l_shifted.wrap_at(180 * u.deg).radian)
+            lat = newcoords.b.radian
+
+        print("Transforming to Hammer projection...")
+        hammer_x, hammer_y = self._hammer_trf_ds(lon, lat)
+
+        # --- DATASHADER PIPELINE ---
+        print("Preparing plot...")
+        # Create a new DataFrame for Datashader with projected coords and values
+        plot_df = pd.DataFrame({
+            'hammer_x': hammer_x,
+            'hammer_y': hammer_y,
+            'value': pmap.values
+        })
+        plot_height = int(raster_width / 1.95)
+        # Define the canvas bounds. Hammer projection is roughly within [-2*sqrt(2), 2*sqrt(2)]
+        # but we use a slightly smaller range based on typical plots.
+        x_range = (-2.05, 2.05)
+        y_range = (-1.05, 1.05)
+        canvas = ds.Canvas(plot_width=raster_width, plot_height=plot_height,
+                        x_range=x_range, y_range=y_range)
+        # canvas.points(), instead of canvas.raster(), which allows to
+        # correctly handle a DataFrame with x, y, and value columns.
+        if redfunc == 'sum':
+            agg = canvas.points(plot_df, x='hammer_x', y='hammer_y', agg=ds.sum('value'))
+        elif redfunc == 'mean':
+            agg = canvas.points(plot_df, x='hammer_x', y='hammer_y', agg=ds.mean('value'))
+        # TODO we may add other reduction functions if needed
+
+        # Extract non-NaN values from the aggregated data for auto-ranging
+        valid_agg_data = agg.where(np.isfinite(agg)).values.flatten()
+        valid_agg_data = valid_agg_data[np.isfinite(valid_agg_data)]
+        # Handle auto-ranging for cmin/cmax if not provided
+        how = binscale
+        if cmin is None:
+            if how in ['log', 'cbrt']: # Scales that require positive numbers
+                positive_data = valid_agg_data[valid_agg_data > 0]
+                cmin = positive_data.min() if len(positive_data) > 0 else 1  # TODO maybe better e.g. 1e-6? To be tested
+            else:
+                cmin = valid_agg_data.min() if len(valid_agg_data) > 0 else 0
+        if cmax is None:
+            cmax = valid_agg_data.max() if len(valid_agg_data) > 0 else cmin
+        # Generate the shaded plot
+        final_cmap = plt.get_cmap(cmap)
+        if how == 'cbrt':  # span not supported in cbrt (yet)
+            img = tf.shade(agg, cmap=final_cmap, how=how)
+        else:
+            img = tf.shade(agg, cmap=final_cmap, how=how, span=[cmin,cmax])
+
+        # --- MATPLOTLIB DISPLAY ---
+        print("Creating figure...")
+        fig_width = 16.18 * fig_scale
+        fig_height = 10.0 * fig_scale
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), facecolor='white')
+        ax.imshow(img.to_pil()) # Display the Datashader image
+        ax.set_axis_off()
+        if title is not None:
+            ax.set_title(title, color='black', fontsize=14)  # TODO adjust font size depending on fig width
+
+        # Manually create a colorbar
+        if clabel is not None:
+            if how == 'log':
+                norm = mcolors.LogNorm(vmin=cmin, vmax=cmax)
+            elif how == 'cbrt':
+                # Use PowerNorm with a gamma of 1/3 for cube-root scaling
+                norm = mcolors.PowerNorm(gamma=1./3., vmin=cmin, vmax=cmax)
+            else: # 'linear'
+                norm = mcolors.Normalize(vmin=cmin, vmax=cmax)
+            sm = plt.cm.ScalarMappable(cmap=final_cmap, norm=norm)
+            sm.set_array([])
+            cbar = fig.colorbar(sm, ax=ax, orientation="vertical", fraction=0.023, pad=0.03)
+            cbar.set_label(clabel, color='black')
+            plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='black')
+
+        fig.tight_layout(pad=0)
+
+        if tofile is not None:
+            print(f"Storing to {tofile}...")
+            plt.savefig(tofile, bbox_inches='tight', pad_inches=0.1, dpi=150, facecolor='white')
+        else:
+            print("Showing plot...")
+            plt.show()
+
         print("Done!")
 
 
