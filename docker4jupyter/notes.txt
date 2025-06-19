@@ -1,0 +1,22 @@
+FUNCTIONALITIES:
++ users can signup and login with their own password
++ new users need to be authorized by admin to be able to login
++ the admin username is configured
++ data persists (users, notebooks, sessions) after container shutdowns
++ users can access /data files
++ users are blocked 10 minutes after 3 failing login attempts (keep same failing login message)
++ password restrictions:
+    + common passwords
+    + minimum 8 characters
++ users have no access to:
+    + jupyterhub configuration
+    + other users home
+    + install new packages using apt-get or pip
+    + ls /home and see other usernames
+    + jupyterhub.sqlite, jupyterhub_cookie_secret, jupyterhub+proxy.pid
+    + edit shared data files or the directory
+    - they can see running processes and their user (top)
+    - they can see some enviroment variables
+- no quota for users (need to configure in the host?)
+- cannot change password if user forgot it (not implemented by authenticators)
+
