@@ -10,7 +10,7 @@ RUN apt-get update && \
     apt-get install -y python3 python3-pip python3-venv nodejs npm 
 
 # Install optional packages
-RUN apt-get install -y vim sqlite3
+RUN apt-get install -y vim sqlite3 screen
 
 # Create a virtual environment for JupyterHub
 RUN python3 -m venv /opt/jupyterhub && \
