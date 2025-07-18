@@ -6,6 +6,6 @@ docker run \
     --cpus="8" --memory="16g" \
     -v ./persistent/users:/home \
     -v ./persistent/var:/var/lib/jupyterhub \
-    -v /data/Gaia/cs46/:/data/ \
+    -v /data/Gaia/dr3/:/data/ \
     -p 8000:8000 \
     --name jupyterhub-container jupyterhub:0.1
