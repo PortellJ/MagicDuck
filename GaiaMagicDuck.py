@@ -1,11 +1,14 @@
 """
-"Magic Duck" for Gaia data tables;
-it should also be applicable to other astronomical catalogues
+"Magic Duck" for Gaia data tables.
+
+It should also be applicable to other astronomical catalogues
 or scientific data tables in general.
-It's based on a DuckDB persistent database file that must have
-been prepared beforehand.
-Jordi Portell i de Mora (jportell@icc.ub.edu)
+It's based on a DuckDB persistent database file
+(or Parquet files) that must have been prepared beforehand.
+
+Author: Jordi Portell i de Mora (jportell@icc.ub.edu)
 """
+
 
 import duckdb
 import pandas as pd
@@ -17,12 +20,13 @@ import astropy.units as u
 import math as m
 import datashader as ds
 from datashader import transfer_functions as tf
+import healpy as hp
 
 
 class GaiaMagicDuck:
     """
     "Magic Duck" for Gaia data tables.
-    Jordi Portell (jportell@icc.ub.edu), 2025
+    Author: Jordi Portell (jportell@icc.ub.edu)
 
     This class provides functions to easily query huge tables
     using DuckDB and then generate statistics, plots or skymaps.
@@ -33,10 +37,16 @@ class GaiaMagicDuck:
 
     Attributes
     ----------
-    dbfile : str
+    dbfile : str, optional
         String with the DuckDB filename (and full path) to be used.
-    maintable : str
-        Main DB table to be used (e.g. 'gaia_source')
+        It can be "None", so that you can still use this package
+        e.g. on Parquet files, or attach different databases, or CSVs, etc.
+        That is, allowing you to just use plain SQL on whichever files
+        or databases you may have.
+        In that case, a NON-PERSISTENT in-memory database will be used.
+    maintable : str, optional
+        Main DB table to be used (e.g. 'gaia_source').
+        It can also be "None" for no pre-configuration at all.
     threads : int, optional
         Number of threads to be used by DuckDB.
     maxram : str, optional
@@ -46,34 +56,77 @@ class GaiaMagicDuck:
         for e.g. specifying a fast NVMe disk partition.
     """
 
-    def __init__(self, dbfile, maintable, threads = 2, maxram = "'4GB'", tmpdir = None):
+    def __init__(self, dbfile = None, maintable = None, threads = 2, maxram = "'4GB'", tmpdir = None):
+        
+        print("DuckDB version: " + duckdb.__version__)
         # Check that we've provided the necessary parameters
         if dbfile is None or maintable is None:
-            raise AttributeError("dbfile and maintable must be provided.")
-        # Connect to our DB, and show its columns for reference.
-        self.con = duckdb.connect(dbfile, read_only=True)
+            self.con = duckdb.connect()
+            self.maintable = None
+            print("Note: using non-persistent in-memory DB.")
+        else:
+            # Connect to our DB, and show its columns for reference.
+            self.con = duckdb.connect(dbfile, read_only=True)
+            self.maintable = maintable
+            self.con.sql("desc " + self.maintable).show(max_rows=500)
+        
         self.con.sql("set threads = " + str(threads))
         self.con.sql("set memory_limit = " + maxram)
         if tmpdir is not None:
             self.con.sql("set temp_directory = " + tmpdir)
         self.con.sql("PRAGMA enable_progress_bar;")
-        print("DuckDB version: " + duckdb.__version__)
-        self.maintable = maintable
-        self.con.sql("desc " + self.maintable).show(max_rows=300)
+        
         # By default, define 'ra' and 'dec' for the skymap queries
         self.ra = 'ra'
         self.dec = 'dec'
         # Also, indicate that they are not quantized
         self.radecq = 1.0
+        # Indicate the default HEALPix level for skymaps
+        self.hplev = 10
+        # Indicate also some default values for the HEALPix column,
+        self.hpcol = 'source_id'
+        # and for the number of bits to be right-shifted (in the HEALPix column)
+        # to properly use it at the level specified above
+        self.hp_rsh_bits = 39
+        # Finally, indicate that we'll use RA/DEC (not HEALPix) by default
+        # (this internal attribute can only be 'radec' or 'healpix')
+        self.skymap_option = 'radec'
 
 
-    def attach(self, dbfile, alias, maintable):
+    def set_main_parquet(self, path):
+        """
+        When you have initialized this package with dbfile = None (and only in that case),
+        you can invoke this to set the 'main table' to some given Parquet file (or
+        to a Hive-partitioned set of Parquet files).
+        In this way, you'll be able to use e.g. qget() or qskymap() on that.
+        It displays the columns in the file(s) found.
+        path : str
+            Path and filename of your Parquet file, or
+            path and base directory name containing your Hive-partitioned Parquet files.
+        """
+        self.maintable = path
+        self.con.sql("describe select * from read_parquet(" + self.maintable + ")").show(max_rows=500)
+
+
+    def attachdb(self, dbfile, alias, maintable):
         """
         Attach to an additional DuckDB file identifying it with 'alias'
-        and describe the 'maintable' indicated.
+        and describe the 'maintable' indicated (unless it's None).
         """
         self.con.sql("attach '" + dbfile + "' as " + alias + "(READ_ONLY)")
-        self.con.sql("desc " + alias + "." + maintable).show(max_rows=300)
+        if maintable is not None:
+            self.con.sql("desc " + alias + "." + maintable).show(max_rows=300)
+
+
+    def attachdb_for_writing(self, dbfile, alias, maintable):
+        """
+        Attach to an additional DuckDB file WITH WRITE PERMISSIONS,
+        identifying it with 'alias', and describe the 'maintable'
+        indicated (unless it's None).
+        """
+        self.con.sql("attach '" + dbfile + "' as " + alias)
+        if maintable is not None:
+            self.con.sql("desc " + alias + "." + maintable).show(max_rows=300)
 
 
     def quant(self, name, frac):
@@ -125,14 +178,33 @@ class GaiaMagicDuck:
 
     def setradec(self, ra, dec, q):
         """
-        Set the RA and DEC strings and their quantization (if any)
-        ra : string (e.g. 'ra' or 'Alpha')
-        dec : string
+        Set the RA and DEC strings and their quantization (if any).
+        After invoking this function, RA/DEC becomes the default approach
+        for the skymaps.
+        ra : str (e.g. 'ra' or 'Alpha')
+        dec : str
         q : 1.0 for no quantization; otherwise, something like 10.0 or 12.0
         """
         self.ra = ra
         self.dec = dec
         self.radecq = q
+        self.skymap_option = 'radec'
+
+
+    def sethpix(self, colname, level, rshbits):
+        """
+        Set the HEALPix configuration for the skymap queries and plots.
+        After invoking this function, HEALPix becomes the default approach
+        for the skymaps.
+        colname : str (e.g. 'source_id', 'hp16', etc.)
+        level : int (the HEALPix level)
+        rshbits : int (the number of bits for the right-shift to be
+                        applied to 'colname' to reach 'level')
+        """
+        self.hpcol = colname
+        self.hplev = level
+        self.hp_rsh_bits = rshbits
+        self.skymap_option = 'healpix'
 
 
     def qskymap(self, sel, cond):
@@ -142,17 +214,28 @@ class GaiaMagicDuck:
         "MEDIAN(value) as medval", etc.
         'cond' is a standard SQL condition, as in the 'qget' function.
         """
-        # If we have the quantized fields:
-        if (self.radecq != 1.0):
-            query = " select " + self.ra + "/" + str(self.radecq) + " as qra, \
-                    " + self.dec + "/" + str(self.radecq) + " as qdec, "
+        # RA/DEC option?
+        if self.skymap_option == 'radec':
+            # If we have the quantized fields:
+            if (self.radecq != 1.0):
+                query = " select " + self.ra + "/" + str(self.radecq) + " as qra, \
+                        " + self.dec + "/" + str(self.radecq) + " as qdec, "
+            else:
+                query = " select floor(" + self.ra + "*12.0)/12.0 as qra, floor(" + self.dec + "*12.0)/12.0 as qdec, "
+            query += sel + " from " + self.maintable
+            if (cond != None):
+                query += " where " + cond
+            query += " group by qra,qdec"
+            print("Running query: " + query)
+        elif self.skymap_option == 'healpix':
+            query = " select (" + self.hpcol + " >> " + str(self.hp_rsh_bits) + ") as hpix, "
+            query += sel + " from " + self.maintable
+            if (cond != None):
+                query += " where " + cond
+            query += " group by hpix"
+            print("Running query: " + query)
         else:
-            query = " select floor(" + self.ra + "*12.0)/12.0 as qra, floor(" + self.dec + "*12.0)/12.0 as qdec, "
-        query += sel + " from " + self.maintable
-        if (cond != None):
-            query += " where " + cond
-        query += " group by qra,qdec"
-        print("Running query: " + query)
+            raise AttributeError("Invalid skymap option: %s" % self.skymap_option)
         return self.con.sql(query)
 
 
@@ -171,6 +254,7 @@ class GaiaMagicDuck:
                 cmin = None, cmax = None, cmap = 'turbo', tofile = None,
                 doecliptic = False, rot = 0):
         """
+        DEPRECATED, use plotsky_ds() instead.
         Plot a skymap in Galactic coordinates using Matplotlib.
         It can be a bit slow (around 1 minute depending on the plot size,
         number of bins retrieved from the query, etc.)
@@ -183,18 +267,18 @@ class GaiaMagicDuck:
             pixel map, i.e. values per ra/dec bin (in principle from the same dataframe), e.g. skymap['counts']
         reducefunc : reduce_C_function
             reduce_C_function to use for the bins, e.g. np.sum or np.median
-        binscale : string
+        binscale : str
             Either "log" for logarithmic bins/scale, or None for linear scale
-        clabel : string
+        clabel : str
             Label for the pixels (for the colorbar), e.g. "Counts"
-        title : string
+        title : str
             Plot title
         cmin, cmax : float
             Min/max colormap values to be shown
-        cmap : string
+        cmap : str
             Color map to be used. Some recommended ones: 'turbo', 'Greys_r', 'inferno', 'gist_ncar'...
             (you can add "_r" to reverse the map)
-        tofile : string
+        tofile : str
             You can indicate here a PNG filename to save the figure *instead* of showing it.
         doecliptic : bool
             True to use Ecliptic coordinates, False for Galactic
@@ -260,8 +344,8 @@ class GaiaMagicDuck:
 
     def plotsky_ds(self, radec, pmap, redfunc='sum', binscale='linear',
                            clabel=None, title=None, cmin=None, cmax=None, cmap='turbo',
-                           tofile=None, doecliptic=False, rot=0,
-                           raster_width=1600, fig_scale=1.0):
+                           tofile=None, doecliptic=False, doequat=False, rot=0, grid=False,
+                           raster_width=1200, fig_scale=0.75):
         """
         Plots a skymap in Galactic or Ecliptic coordinates using Datashader for high performance.
 
@@ -271,25 +355,29 @@ class GaiaMagicDuck:
             DataFrame with quantized coordinates, e.g., 'qra', 'qdec', and the value to plot.
         pmap : array
             Pixel map, i.e. values per ra/dec bin (in principle from the same dataframe), e.g. skymap['counts']
-        redfunc : string, optional
+        redfunc : str, optional
             Reduce function to be used: 'mean' or 'sum' (see https://datashader.org/api.html#reductions)
-        binscale : string, optional
+        binscale : str, optional
             'cbrt' for cube root color scale, 'log' for logarithmic, or 'linear'.
-        clabel : string, optional
+        clabel : str, optional
             Label for the colorbar (e.g. 'source counts'). If not provided, no colorbar will be generated.
-        title : string, optional
+        title : str, optional
             Label for the plot title.
         cmin, cmax : float, optional
             Min/max values for the color scale. It will clamp the pmap values before plotting them.
-        cmap : string, optional
+        cmap : str, optional
             Matplotlib colormap name. Some recommended ones: 'turbo', 'Greys_r', 'inferno', 'gist_ncar'...
             (you can add "_r" to reverse the map)
-        tofile : string, optional
+        tofile : str, optional
             PNG filename to save the figure instead of showing it.
         doecliptic : bool, optional
-            True for Ecliptic coordinates, False for Galactic.
+            True for Ecliptic coordinates, False for Galactic or Equatorial.
+        doequat : bool, optional
+            True for Equatorial coordinates, False for Galactic.
         rot : float, optional
-            Rotation in degrees for Galactic longitude.
+            Longitude rotation in degrees.
+        grid : bool
+            Plot the grid (TODO pending to implement, no effect for now)
         raster_width : int, optional
             The width of the output raster image in pixels. Too high values for too few datapoints will lead to aliasing.
         fig_scale : float, optional
@@ -303,13 +391,34 @@ class GaiaMagicDuck:
         print("RSE of values: ", rse)
         print("Sum of values: ", np.sum(pmap.values))
         print("Getting coordinates...")
-        coords = SkyCoord(ra=radec['qra'].values * u.deg,
-                        dec=radec['qdec'].values * u.deg,
-                        frame='icrs')
+        
+        # HEALPix-based?
+        if self.skymap_option == 'healpix':
+            # Get NSIDE from the healpix level
+            nside = pow(2,self.hplev)
+            ra, dec = hp.pixelfunc.pix2ang(nside, radec['hpix'], nest=True, lonlat=True)
+            coords = SkyCoord(ra=ra * u.deg,
+                            dec=dec * u.deg,
+                            frame='icrs',
+                            unit=u.deg)
+        else:
+            # RA/DEC based
+            coords = SkyCoord(ra=radec['qra'].values * u.deg,
+                            dec=radec['qdec'].values * u.deg,
+                            frame='icrs')
+        
         if doecliptic:
             newcoords = coords.barycentrictrueecliptic
-            lon = newcoords.lon.wrap_at(180 * u.deg).radian
+            lon_shifted = newcoords.lon + rot * u.deg
+            # The negation is important for the conventional sky-map orientation
+            lon = -(lon_shifted.wrap_at(180 * u.deg).radian)
             lat = newcoords.lat.radian
+        elif doequat:
+            newcoords = coords.icrs
+            ra_shifted = newcoords.ra + rot * u.deg
+            # The negation is important for the conventional sky-map orientation
+            lon = -(ra_shifted.wrap_at(180 * u.deg).radian)
+            lat = newcoords.dec.radian
         else:
             newcoords = coords.galactic
             l_shifted = newcoords.l + rot * u.deg
@@ -341,6 +450,12 @@ class GaiaMagicDuck:
             agg = canvas.points(plot_df, x='hammer_x', y='hammer_y', agg=ds.sum('value'))
         elif redfunc == 'mean':
             agg = canvas.points(plot_df, x='hammer_x', y='hammer_y', agg=ds.mean('value'))
+        elif redfunc == 'max':
+            agg = canvas.points(plot_df, x='hammer_x', y='hammer_y', agg=ds.max('value'))
+        elif redfunc == 'min':
+            agg = canvas.points(plot_df, x='hammer_x', y='hammer_y', agg=ds.min('value'))
+        elif redfunc == 'mode':
+            agg = canvas.points(plot_df, x='hammer_x', y='hammer_y', agg=ds.mode('value'))
         # TODO we may add other reduction functions if needed
 
         # Extract non-NaN values from the aggregated data for auto-ranging
@@ -363,7 +478,7 @@ class GaiaMagicDuck:
         else:
             img = tf.shade(agg, cmap=final_cmap, how=how, span=[cmin,cmax])
 
-        # --- MATPLOTLIB DISPLAY ---
+        # Matplotlib display
         print("Creating figure...")
         fig_width = 16.18 * fig_scale
         fig_height = 10.0 * fig_scale

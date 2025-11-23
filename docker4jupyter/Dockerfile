@@ -7,7 +7,7 @@ LABEL description="JupyterHub for Gaia data"
 
 # Install required system packages
 RUN apt-get update && \
-    apt-get install -y python3 python3-pip python3-venv nodejs npm 
+    apt-get install -y python3 python3-pip python3-venv nodejs npm
 
 # Install optional packages
 RUN apt-get install -y vim sqlite3 screen
@@ -19,8 +19,8 @@ RUN python3 -m venv /opt/jupyterhub && \
     /opt/jupyterhub/bin/pip install --upgrade jupyterhub jupyterhub-nativeauthenticator notebook && \
     npm install -g configurable-http-proxy
 
-# Install optional libraries
-RUN /opt/jupyterhub/bin/pip install matplotlib numpy duckdb pandas scipy astropy astroquery datashader && \
+# Install packages
+RUN /opt/jupyterhub/bin/pip install matplotlib numpy duckdb pandas scipy astropy astroquery datashader healpy pyarrow && \
     /opt/jupyterhub/bin/pip install --upgrade duckdb
 # From Gaia/DPAC internal communication (2025-06-03) we may actually need this
 # to properly use the latest Gaia Archive:
