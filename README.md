@@ -36,8 +36,14 @@ You may also be interested in the CSV-to-Parquet script.
 
 Under `docker4jupyter` you can find the basic setup needed to deploy a JupyterHub:
 
-* The DockerFile to create a container with JupyterHub and some Python packages (including DuckDB).
-* The `jupyterhub_config.py` configuration file required by JupyterHub. Please revise this (esp. the last lines) and update as needed.
-* The `entrypoint.sh` script invoked when the container starts.
-* The main `run.sh` script which builds the Docker container and starts it.
-* You will also find there a copy of the GaiaMagicDuck.py package, which is the copied into the shared folder within the container.
+* The `DockerFile` to create a container with JupyterHub and some Python packages (including DuckDB).
+* The `jupyterhub_config.py` configuration file required by JupyterHub. Please revise this (esp. the lines highlighted with `TO BE CONFIGURED`) and update as needed.
+* A `hub_extras` file for additional functionalities, where you may optionally configure some variables.
+* A `jupyterhub-singleuser-limited` file which limits the maximum virtual memory allowed to each user. Please revise this and set your own limit.
+* The `entrypoint.sh` script, invoked when the container starts.
+* An `init_home.sh` script, invoked when a new user logs in for the first time.
+* A `mail.env` file under the `persistent` folder, where you may setup your mail account if you wish to generate automatic notifications of signups and approvals.
+* The main `run.sh` script which builds the Docker container and starts it. You should revise this to set your CPU cores and memory limits (for the overall jupyterhub container), the mapped port to acces it, and the file with the Gaia data.
+* You will also find there a copy of the GaiaMagicDuck.py package, which is copied into the shared folder within the container.
+
+To deploy the service, you just need to configure the elements indicated above and launch `run.sh`.

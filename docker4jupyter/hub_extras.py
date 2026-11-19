@@ -1,6 +1,6 @@
 """Extras for JupyterHub + NativeAuthenticator.
 
- 1. Signup page: logo, title and extra fields (edit EXTRA_FIELDS below).
+ 1. Signup page: logo, title and extra fields (edit SITE_TITLE, SITE_INTRO and EXTRA_FIELDS below).
  2. On each new signup: e-mail to the admin + row appended to a CSV (no password).
  3. When the admin approves a user: e-mail to that user.
  4. Stable Linux UIDs/GIDs for users (persisted in uids.json).
