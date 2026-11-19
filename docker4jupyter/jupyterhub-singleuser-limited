@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# Limit the maximum amount of virtual memory available
+ulimit -v $((16 * 1024 * 1024))  # in kilobytes (16 GB)
+
+# Call the original spawner with the same arguments
+exec /opt/jupyterhub/bin/jupyterhub-singleuser "$@"

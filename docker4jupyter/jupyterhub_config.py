@@ -176,11 +176,30 @@ c = get_config()  #noqa
 #    - pam: jupyterhub.auth.PAMAuthenticator
 #    - native: nativeauthenticator.NativeAuthenticator
 #  Default: 'jupyterhub.auth.PAMAuthenticator'
-c.JupyterHub.authenticator_class = 'nativeauthenticator.NativeAuthenticator'
+
+
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hub_extras
+c.JupyterHub.authenticator_class = 'hub_extras.MyNativeAuthenticator'
+#c.JupyterHub.authenticator_class = 'nativeauthenticator.NativeAuthenticator'
+
+
 
 ##  Load templates for authentication-related pages
-import os, nativeauthenticator
-c.JupyterHub.template_paths = [f"{os.path.dirname(nativeauthenticator.__file__)}/templates/"]
+
+#import os, nativeauthenticator
+#c.JupyterHub.template_paths = [f"{os.path.dirname(nativeauthenticator.__file__)}/templates/"]
+
+import nativeauthenticator
+c.JupyterHub.template_paths = [
+    hub_extras.build_signup_template('/var/lib/jupyterhub/templates'),  # patched signup.html first
+    f"{os.path.dirname(nativeauthenticator.__file__)}/templates/",
+]
+#c.JupyterHub.logo_file = '/var/lib/jupyterhub/gaiamdlogo.png'
+c.JupyterHub.logo_file = '/etc/jupyterhub/logo.png'
+
+
 
 ## The base URL of the entire application.
 #  
@@ -1070,7 +1089,7 @@ c.JupyterHub.db_url = 'sqlite:////var/lib/jupyterhub/jupyterhub.sqlite'
 #  environment variables. Most, including the default, do not. Consult the
 #  documentation for your spawner to verify!
 #  Default: ['jupyterhub-singleuser']
-c.Spawner.cmd = ['/opt/jupyterhub/bin/jupyterhub-singleuser']
+c.Spawner.cmd = ['/opt/jupyterhub/bin/jupyterhub-singleuser-limited']
 
 ## Maximum number of consecutive failures to allow before shutting down
 #  JupyterHub.
@@ -1440,14 +1459,34 @@ c.Spawner.notebook_dir = '~/'
 #  
 #      c.Spawner.pre_spawn_hook = my_hook
 #  Default: None
-from subprocess import check_call
-def pre_spawn_hook(spawner):
-    username = spawner.user.name
-    try:
-        check_call(['useradd', '-ms', '/bin/bash', username])
-    except Exception as e:
-        print(f'{e}')
-c.Spawner.pre_spawn_hook = pre_spawn_hook
+
+
+# import subprocess
+
+# def pre_spawn_hook(spawner):
+#     username = spawner.user.name
+#     home_exists = os.path.isdir(f"/home/{username}")
+# 
+#     try:
+#         # Create user with home directory
+#         subprocess.check_call(['useradd', '-ms', '/bin/bash', username])
+#     except subprocess.CalledProcessError as e:
+#         print(f"Adding new user failed: {e}")
+# 
+#     if home_exists:
+#         return
+# 
+#     try:
+#         # Only executed if the home didn't exist before, so when the home is new
+#         subprocess.check_call(['/opt/jupyterhub/bin/init_home.sh', username])
+#     except subprocess.CalledProcessError as e:
+#         print(f"Initializing home failed: {e}")
+
+#c.Spawner.pre_spawn_hook = pre_spawn_hook
+
+c.Spawner.pre_spawn_hook = hub_extras.pre_spawn_hook
+
+
 
 ## An optional hook function that you can implement to modify the ready event,
 #  which will be shown to the user on the spawn progress page when their server
@@ -2321,7 +2360,7 @@ c.Authenticator.allow_all = True
 #------------------------------------------------------------------------------
 ## 
 #  See also: Authenticator.admin_users
-c.NativeAuthenticator.admin_users = {'my_user'}
+c.NativeAuthenticator.admin_users = {'my_admin_user'}
 
 #  Default: False
 # c.NativeAuthenticator.allow_2fa = False
@@ -2476,7 +2515,7 @@ c.NativeAuthenticator.seconds_before_next_try = 600
 
 ## 
 #  See also: Authenticator.username_pattern
-# c.NativeAuthenticator.username_pattern = ''
+c.NativeAuthenticator.username_pattern = '^[A-Za-z0-9_-]+$'
 
 ## Deprecated, use `Authenticator.allowed_users`
 #  See also: Authenticator.whitelist
@@ -2994,5 +3033,9 @@ c.ConfigurableHTTPProxy.pid_file = '/var/lib/jupyterhub/jupyterhub-proxy.pid'
 c.JupyterHub.base_url = '/my_public_url_path'
 c.JupyterHub.ip = '*'
 c.Spawner.default_url = '/lab'
-c.JupyterHub.bind_url = 'http://:8000//my_public_url_path'
+c.JupyterHub.bind_url = 'https://:8000/my_public_url_path'
+c.JupyterHub.port = 8000
 
+c.Spawner.ip = 'my.local.ip.address'
+c.LocalProcessSpawner.ip = 'my.local.ip.address'
+c.SimpleLocalProcessSpawner.ip = 'my.local.ip.address'

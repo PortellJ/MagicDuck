@@ -4,7 +4,9 @@ FUNCTIONALITIES:
 + the admin username is configured
 + data persists (users, notebooks, sessions) after container shutdowns
 + users can access /data files
++ home users can be initialized with default content (init_home.sh) 
 + users are blocked 10 minutes after 3 failing login attempts (keep same failing login message)
++ username restrictions: '^[A-Za-z0-9_-]+$'
 + password restrictions:
     + common passwords
     + minimum 8 characters
@@ -17,6 +19,6 @@ FUNCTIONALITIES:
     + edit shared data files or the directory
     - they can see running processes and their user (top)
     - they can see some enviroment variables
++ python executions have a memory limit (virtual memory) 
 - no quota for users (need to configure in the host?)
 - cannot change password if user forgot it (not implemented by authenticators)
-
