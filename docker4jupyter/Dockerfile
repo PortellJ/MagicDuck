@@ -29,9 +29,8 @@ RUN mkdir -p /etc/jupyterhub /var/lib/jupyterhub
 COPY jupyterhub_config.py hub_extras.py logo.png /etc/jupyterhub/
 RUN chmod 700 /etc/jupyterhub/
 
-# Create the shared folder and copy there the necessary package(s) and example notebooks
-RUN mkdir -p /home/shared
-COPY GaiaMagicDuck.py /home/shared/
+# Copy the necessary package(s) and example notebooks into a provisional folder
+COPY GaiaMagicDuck.py /opt/shared-files/
 
 # Copy entry point and additional helper scripts
 COPY entrypoint.sh /opt/jupyterhub/bin/entrypoint.sh

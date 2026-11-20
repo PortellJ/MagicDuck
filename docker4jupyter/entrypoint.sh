@@ -12,6 +12,7 @@ chmod 711 /home
 # Shared folder (example notebooks etc.): readable by all, writable only by root
 mkdir -p /home/shared
 chmod -R go+rX /home/shared
+cp /opt/shared-files/* /home/shared/
 
 # Note: /data is mounted read-only (see run.sh). Set its permissions once on the
 # host instead, e.g.:  chmod -R a+rX /data/
