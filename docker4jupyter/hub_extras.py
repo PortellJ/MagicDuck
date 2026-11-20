@@ -36,6 +36,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from email.utils import formataddr, parseaddr
 from pathlib import Path
 
 import nativeauthenticator
@@ -104,11 +105,29 @@ def build_signup_template(out_dir):
             "this NativeAuthenticator version needs a manual template."
         )
     (out_dir / "signup.html").write_text(page)
-    (out_dir / "page.html").write_text(BANNER_TEMPLATE)  # load banner on all hub pages
+    (out_dir / "page.html").write_text(_banner_page(src.parent))  # native page.html + load banner
     return str(out_dir)
 
 
 # ----------------------------------------------------------------------- mail
+def _sender():
+    """Sender must be a fully-qualified address (user@domain): many SMTP servers
+    reject a bare login name such as 'Gaia'. MAIL_FROM may also be 'Name <user@domain>'."""
+    raw = os.environ.get("MAIL_FROM") or os.environ.get("SMTP_USER") or "jupyterhub"
+    name, addr = parseaddr(raw)
+    if "@" not in addr:
+        domain = (
+            os.environ.get("MAIL_DOMAIN")
+            or os.environ.get("ADMIN_EMAIL", "").rpartition("@")[2]
+            or "localhost"
+        )
+        fixed = f"{addr or 'jupyterhub'}@{domain}"
+        log.warning("MAIL_FROM/SMTP_USER %r is not a full address; using %s. "
+                    "Set MAIL_FROM=user@domain to silence this.", raw, fixed)
+        addr = fixed
+    return formataddr((name, addr))
+
+
 def send_mail(to, subject, body):
     host = os.environ.get("SMTP_HOST")
     if not host or not to:
@@ -116,7 +135,7 @@ def send_mail(to, subject, body):
         return
     user = os.environ.get("SMTP_USER")
     msg = EmailMessage()
-    msg["From"] = os.environ.get("MAIL_FROM") or user or "jupyterhub@localhost"
+    msg["From"] = _sender()
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
@@ -218,11 +237,8 @@ ACTIVE_WINDOW = 900  # seconds: a user counts as "active" if seen in the last 15
 _SNAP = {"t": 0.0, "data": None}
 _CPU = {"prev": None, "pct": None}
 
-# Overrides the hub's page.html (extends the default) to add a small banner.
-BANNER_TEMPLATE = """{% extends "templates/page.html" %}
-{% block announcement %}
-{{ super() }}
-{% if user %}
+# Banner markup, injected into the "announcement" block of the hub's page.html.
+BANNER_HTML = """{% if user %}
 <div id="gmd-load" style="display:none;text-align:center;font-size:.85em;padding:.35em 0;border-bottom:1px solid rgba(128,128,128,.3)"></div>
 <script>
 (function () {
@@ -248,8 +264,31 @@ BANNER_TEMPLATE = """{% extends "templates/page.html" %}
 })();
 </script>
 {% endif %}
-{% endblock %}
 """
+
+# Standalone version (extends the default page.html). Fallback only.
+BANNER_TEMPLATE = (
+    '{% extends "templates/page.html" %}\n{% block announcement %}\n{{ super() }}\n'
+    + BANNER_HTML + "{% endblock %}\n"
+)
+
+
+def _banner_page(native_dir):
+    """Build our page.html from NativeAuthenticator's OWN page.html plus the banner.
+
+    NativeAuthenticator's page.html is what adds the 'Authorize Users' and
+    'Change password' menu entries. A page.html of ours placed earlier in
+    template_paths shadows it, so we must start from its content, not from the
+    hub's default page.html."""
+    native = Path(native_dir) / "page.html"
+    if not native.exists():
+        log.warning("NativeAuthenticator has no page.html; menu entries come from elsewhere")
+        return BANNER_TEMPLATE
+    text = native.read_text()
+    m = re.search(r"\{%-?\s*block\s+announcement\s*-?%\}", text)
+    if m:  # it already defines the block: add the banner at its start
+        return text[:m.end()] + "\n" + BANNER_HTML + text[m.end():]
+    return text.rstrip() + "\n{% block announcement %}\n{{ super() }}\n" + BANNER_HTML + "{% endblock %}\n"
 
 
 def _read(path):
