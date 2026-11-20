@@ -39,7 +39,7 @@ Under `docker4jupyter` you can find the basic setup needed to deploy a JupyterHu
 * The `DockerFile` to create a container with JupyterHub and some Python packages (including DuckDB).
 * The `jupyterhub_config.py` configuration file required by JupyterHub. Please revise this (esp. the lines highlighted with `TO BE CONFIGURED`) and update as needed.
 * A `hub_extras` file for additional functionalities, where you may optionally configure some variables.
-* A `jupyterhub-singleuser-limited` file which limits the maximum virtual memory allowed to each user. Please revise this and set your own limit.
+* A `jupyterhub-singleuser-limited` file which enforces the kernel to kill just the user server/kernel in case of out-of-memory, which should allow the Hub and other users to continue.
 * The `entrypoint.sh` script, invoked when the container starts.
 * An `init_home.sh` script, invoked when a new user logs in for the first time.
 * A `mail.env` file under the `persistent` folder, where you may setup your mail account if you wish to generate automatic notifications of signups and approvals.
