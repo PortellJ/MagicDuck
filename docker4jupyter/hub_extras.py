@@ -236,39 +236,50 @@ class ApproveWithMail(ToggleAuthorizationHandler):
 ACTIVE_WINDOW = 900  # seconds: a user counts as "active" if seen in the last 15 min
 _SNAP = {"t": 0.0, "data": None}
 _CPU = {"prev": None, "pct": None}
+_IO = {"prev": None, "rate": None}
+_SAMPLER = {"started": False, "cb": None}
 
-# Banner markup, injected into the "announcement" block of the hub's page.html.
+# Banner markup: a small item at the end of the navbar. The nav_bar_left_items block
+# is the one NativeAuthenticator itself extends (for "Authorize Users"), so it is
+# known to be rendered. Errors are shown in the item instead of hiding it.
 BANNER_HTML = """{% if user %}
-<div id="gmd-load" style="display:none;text-align:center;font-size:.85em;padding:.35em 0;border-bottom:1px solid rgba(128,128,128,.3)"></div>
+<li class="nav-item" style="display:flex;align-items:center;margin-left:1.75rem"><span id="gmd-load" class="navbar-text" style="font-size:.85em;padding:0">Server load: &hellip;</span>
 <script>
 (function () {
   var box = document.getElementById("gmd-load");
-  var url = "{{ base_url }}hub/load";
+  var url = "{{ base_url }}load";  // in hub templates base_url already ends in "hub/"
   function update() {
     fetch(url, {credentials: "same-origin", headers: {"Accept": "application/json"}})
-      .then(function (r) { if (!r.ok) { throw 0; } return r.json(); })
+      .then(function (r) {
+        if (!r.ok) { throw new Error("HTTP " + r.status); }
+        return r.json();
+      })
       .then(function (d) {
         var m = d.mem;
         var dot = (m === null) ? "" : (m >= 85 ? "\\uD83D\\uDD34 " : (m >= 60 ? "\\uD83D\\uDFE0 " : "\\uD83D\\uDFE2 "));
         var t = dot + "Server load: " + d.active + " active user" + (d.active == 1 ? "" : "s") +
-                " (" + d.servers + " server" + (d.servers == 1 ? "" : "s") + " running)";
+                " (" + d.servers + " running)";
         if (m !== null) { t += " \\u00B7 RAM " + Math.round(m) + "%"; }
         if (d.cpu !== null) { t += " \\u00B7 CPU " + Math.round(d.cpu) + "%"; }
+        if (d.disk_read !== null) {
+          var f = function (x) { return x >= 10 ? Math.round(x) : x.toFixed(1); };
+          t += " \\u00B7 Disk R " + f(d.disk_read) + " / W " + f(d.disk_write) + " MB/s";
+          box.title = "Disk throughput, " + (d.disk_src === "host" ? "whole machine" : "this container");
+        }
         box.textContent = t;
-        box.style.display = "block";
       })
-      .catch(function () { box.style.display = "none"; });
+      .catch(function (e) { box.textContent = "Server load: unavailable (" + e.message + ")"; });
   }
   update();
   setInterval(update, 30000);
 })();
-</script>
+</script></li>
 {% endif %}
 """
 
 # Standalone version (extends the default page.html). Fallback only.
 BANNER_TEMPLATE = (
-    '{% extends "templates/page.html" %}\n{% block announcement %}\n{{ super() }}\n'
+    '{% extends "templates/page.html" %}\n{% block nav_bar_left_items %}\n{{ super() }}\n'
     + BANNER_HTML + "{% endblock %}\n"
 )
 
@@ -285,10 +296,15 @@ def _banner_page(native_dir):
         log.warning("NativeAuthenticator has no page.html; menu entries come from elsewhere")
         return BANNER_TEMPLATE
     text = native.read_text()
-    m = re.search(r"\{%-?\s*block\s+announcement\s*-?%\}", text)
-    if m:  # it already defines the block: add the banner at its start
-        return text[:m.end()] + "\n" + BANNER_HTML + text[m.end():]
-    return text.rstrip() + "\n{% block announcement %}\n{{ super() }}\n" + BANNER_HTML + "{% endblock %}\n"
+    start = re.search(r"\{%-?\s*block\s+nav_bar_left_items\s*-?%\}", text)
+    if start:  # it defines the block: add the item just before the block's end
+        end = re.search(r"\{%-?\s*endblock(?:\s+\w+)?\s*-?%\}", text[start.end():])
+        if end:
+            pos = start.end() + end.start()
+            return text[:pos] + BANNER_HTML + text[pos:]
+        log.warning("Could not find the end of nav_bar_left_items in NativeAuthenticator's page.html; no load banner")
+        return text
+    return text.rstrip() + "\n{% block nav_bar_left_items %}\n{{ super() }}\n" + BANNER_HTML + "{% endblock %}\n"
 
 
 def _read(path):
@@ -340,6 +356,68 @@ def _cpu_percent():
     return _CPU["pct"]
 
 
+def _io_counters():
+    """Cumulative (read_bytes, write_bytes, source). Prefers this container's cgroup
+    io.stat (needs the cgroup 'io' controller to be enabled for it); otherwise falls
+    back to the whole machine's /proc/diskstats. Page-cache hits are not counted:
+    this is real device traffic."""
+    if "io" in (_read("/sys/fs/cgroup/cgroup.controllers") or "").split():
+        r = w = 0
+        for line in (_read("/sys/fs/cgroup/io.stat") or "").splitlines():
+            for tok in line.split()[1:]:
+                key, _, val = tok.partition("=")
+                if key == "rbytes":
+                    r += int(val)
+                elif key == "wbytes":
+                    w += int(val)
+        return r, w, "container"
+    try:
+        import psutil
+        c = psutil.disk_io_counters()
+        if c:
+            return c.read_bytes, c.write_bytes, "host"
+    except Exception:
+        pass
+    return None
+
+
+def _disk_rates():
+    """(read B/s, write B/s, source) averaged since the previous sample."""
+    cur = _io_counters()
+    if cur is None:
+        return None
+    r, w, src = cur
+    now = time.monotonic()
+    prev, _IO["prev"] = _IO["prev"], (now, r, w, src)
+    if prev is not None and prev[3] == src and now - prev[0] >= 1:
+        dt = now - prev[0]
+        _IO["rate"] = (max(0.0, (r - prev[1]) / dt), max(0.0, (w - prev[2]) / dt), src)
+    return _IO["rate"]
+
+
+def _sample():
+    """Update the CPU and disk rates. Runs every 5 s in the hub's event loop, so the
+    figures are recent even if nobody has polled for a while."""
+    try:
+        _cpu_percent()
+        _disk_rates()
+    except Exception:
+        log.exception("load sampler failed")
+
+
+def _ensure_sampler():
+    if _SAMPLER["started"]:
+        return
+    _SAMPLER["started"] = True
+    _sample()  # baseline
+    try:
+        from tornado.ioloop import PeriodicCallback
+        _SAMPLER["cb"] = PeriodicCallback(_sample, 5000)
+        _SAMPLER["cb"].start()
+    except Exception:
+        log.exception("Could not start the load sampler; rates update only when polled")
+
+
 def _age_seconds(dt):
     now = datetime.now(timezone.utc)
     if dt.tzinfo is None:
@@ -363,12 +441,18 @@ def load_snapshot(users):
                 active += 1
         except Exception:
             log.exception("load_snapshot: could not inspect a user")
-    mem, cpu = _mem_percent(), _cpu_percent()
+    _ensure_sampler()
+    if _SAMPLER["cb"] is None:  # no event-loop sampler: sample on demand instead
+        _sample()
+    mem, cpu, io = _mem_percent(), _CPU["pct"], _IO["rate"]
     data = {
         "active": active,
         "servers": servers,
         "mem": None if mem is None else round(mem, 1),
         "cpu": None if cpu is None else round(cpu, 1),
+        "disk_read": None if io is None else round(io[0] / 1e6, 1),
+        "disk_write": None if io is None else round(io[1] / 1e6, 1),
+        "disk_src": None if io is None else io[2],
         "window_min": ACTIVE_WINDOW // 60,
     }
     _SNAP.update(t=now, data=data)
