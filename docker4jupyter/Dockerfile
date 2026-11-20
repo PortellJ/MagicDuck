@@ -21,7 +21,7 @@ RUN python3 -m venv /opt/jupyterhub && \
    npm install -g configurable-http-proxy
 
 # Install packages
-RUN /opt/jupyterhub/bin/pip install matplotlib numpy duckdb pandas scipy astropy astroquery datashader healpy pyarrow ipywidgets && \
+RUN /opt/jupyterhub/bin/pip install matplotlib numpy duckdb pandas scipy astropy astroquery datashader healpy pyarrow ipywidgets jupyter-resource-usage && \
    /opt/jupyterhub/bin/pip install --upgrade duckdb
 
 # Settings, logo and helper module live in the image (NOT in a mounted volume)

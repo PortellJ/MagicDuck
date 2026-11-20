@@ -34,6 +34,12 @@ c.JupyterHub.db_url = 'sqlite:////var/lib/jupyterhub/jupyterhub.sqlite'
 c.Spawner.cmd = ['/opt/jupyterhub/bin/jupyterhub-singleuser-limited']
 
 
+# A memory "limit" to be considered when showing the system load.
+# It doesn't really "cut" the processes, it's not a real limit, but just
+# something for the visual monitoring.
+# ### TO BE CONFIGURED ###
+c.Spawner.mem_limit = '8G'
+
 # Path to the notebook directory for the single-user server
 c.Spawner.notebook_dir = '~/'
 
@@ -99,10 +105,12 @@ c.JupyterHub.bind_url = 'https://:8000/my_public_url_path'
 c.JupyterHub.port = 8000
 
 # The local IP address (within the Docker container) of the hub
-# ### TO BE CONFIGURED ###
-c.Spawner.ip = 'my.local.ip.address'
+# Not sure at all that this should be really set; leaving it commented
+# works perfectly fine.
+#c.Spawner.ip = 'my.local.ip.address'
 
 # The local IP address (within the Docker container) of the spawner
-# ### TO BE CONFIGURED ###
-c.LocalProcessSpawner.ip = 'my.local.ip.address'
-c.SimpleLocalProcessSpawner.ip = 'my.local.ip.address'
+# Not sure at all that this should be really set; leaving it commented
+# works perfectly fine.
+#c.LocalProcessSpawner.ip = 'my.local.ip.address'
+#c.SimpleLocalProcessSpawner.ip = 'my.local.ip.address'

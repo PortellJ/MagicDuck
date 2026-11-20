@@ -34,12 +34,14 @@ import smtplib
 import ssl
 import subprocess
 import time
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
 import nativeauthenticator
 from nativeauthenticator import NativeAuthenticator
 from nativeauthenticator.handlers import SignUpHandler, ToggleAuthorizationHandler
+from jupyterhub.handlers import BaseHandler
 from nativeauthenticator.orm import UserInfo
 from tornado import web
 
@@ -48,7 +50,7 @@ log = logging.getLogger("JupyterHub.hub_extras")
 STATE_DIR = Path(os.environ.get("HUB_STATE_DIR", "/var/lib/jupyterhub"))
 
 # ---------------------------------------------------------------- signup form
-SITE_TITLE = "MagicDuck JupyterHub"
+SITE_TITLE = "Gaia MagicDuck JupyterHub"
 SITE_INTRO = "You can request an account here, which will need approval by an administrator."
 
 # (form field name, label, kind, required)   kind: "text" | "textarea"
@@ -102,6 +104,7 @@ def build_signup_template(out_dir):
             "this NativeAuthenticator version needs a manual template."
         )
     (out_dir / "signup.html").write_text(page)
+    (out_dir / "page.html").write_text(BANNER_TEMPLATE)  # load banner on all hub pages
     return str(out_dir)
 
 
@@ -210,6 +213,139 @@ class ApproveWithMail(ToggleAuthorizationHandler):
             await send_mail_async(getattr(after, "email", ""), "Your JupyterHub account was approved", body)
 
 
+# ------------------------------------------------------------- load indicator
+ACTIVE_WINDOW = 900  # seconds: a user counts as "active" if seen in the last 15 min
+_SNAP = {"t": 0.0, "data": None}
+_CPU = {"prev": None, "pct": None}
+
+# Overrides the hub's page.html (extends the default) to add a small banner.
+BANNER_TEMPLATE = """{% extends "templates/page.html" %}
+{% block announcement %}
+{{ super() }}
+{% if user %}
+<div id="gmd-load" style="display:none;text-align:center;font-size:.85em;padding:.35em 0;border-bottom:1px solid rgba(128,128,128,.3)"></div>
+<script>
+(function () {
+  var box = document.getElementById("gmd-load");
+  var url = "{{ base_url }}hub/load";
+  function update() {
+    fetch(url, {credentials: "same-origin", headers: {"Accept": "application/json"}})
+      .then(function (r) { if (!r.ok) { throw 0; } return r.json(); })
+      .then(function (d) {
+        var m = d.mem;
+        var dot = (m === null) ? "" : (m >= 85 ? "\\uD83D\\uDD34 " : (m >= 60 ? "\\uD83D\\uDFE0 " : "\\uD83D\\uDFE2 "));
+        var t = dot + "Server load: " + d.active + " active user" + (d.active == 1 ? "" : "s") +
+                " (" + d.servers + " server" + (d.servers == 1 ? "" : "s") + " running)";
+        if (m !== null) { t += " \\u00B7 RAM " + Math.round(m) + "%"; }
+        if (d.cpu !== null) { t += " \\u00B7 CPU " + Math.round(d.cpu) + "%"; }
+        box.textContent = t;
+        box.style.display = "block";
+      })
+      .catch(function () { box.style.display = "none"; });
+  }
+  update();
+  setInterval(update, 30000);
+})();
+</script>
+{% endif %}
+{% endblock %}
+"""
+
+
+def _read(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return None
+
+
+def _mem_percent():
+    """Container memory use in %, like `docker stats` (page cache excluded)."""
+    cur, mx = _read("/sys/fs/cgroup/memory.current"), _read("/sys/fs/cgroup/memory.max")
+    if cur and mx and mx != "max":
+        used = int(cur)
+        for line in (_read("/sys/fs/cgroup/memory.stat") or "").splitlines():
+            key, _, val = line.partition(" ")
+            if key == "inactive_file":
+                used -= int(val)
+                break
+        return 100.0 * max(used, 0) / int(mx)
+    cur = _read("/sys/fs/cgroup/memory/memory.usage_in_bytes")  # cgroup v1
+    mx = _read("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    if cur and mx and int(mx) < (1 << 60):
+        return 100.0 * int(cur) / int(mx)
+    try:
+        import psutil
+        return psutil.virtual_memory().percent
+    except Exception:
+        return None
+
+
+def _cpu_percent():
+    """Container CPU use in % of its CPU allowance, averaged since the last call."""
+    usage = None
+    for line in (_read("/sys/fs/cgroup/cpu.stat") or "").splitlines():
+        if line.startswith("usage_usec"):
+            usage = int(line.split()[1])
+    if usage is None:
+        return None
+    ncpu = float(os.cpu_count() or 1)
+    cpu_max = _read("/sys/fs/cgroup/cpu.max")
+    if cpu_max and not cpu_max.startswith("max"):
+        quota, period = cpu_max.split()[:2]
+        ncpu = int(quota) / int(period)
+    now = time.monotonic()
+    prev, _CPU["prev"] = _CPU["prev"], (now, usage)
+    if prev is not None and now - prev[0] >= 1:
+        _CPU["pct"] = max(0.0, 100.0 * (usage - prev[1]) / ((now - prev[0]) * 1e6 * ncpu))
+    return _CPU["pct"]
+
+
+def _age_seconds(dt):
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return (now - dt).total_seconds()
+
+
+def load_snapshot(users):
+    """Counts only - never user names. Cached for 5 s so polling stays cheap."""
+    now = time.monotonic()
+    if _SNAP["data"] is not None and now - _SNAP["t"] < 5:
+        return _SNAP["data"]
+    servers = active = 0
+    for user in list(users.values()):
+        try:
+            if not any(s.ready for s in user.spawners.values()):
+                continue
+            servers += 1
+            last = user.last_activity
+            if last is not None and _age_seconds(last) < ACTIVE_WINDOW:
+                active += 1
+        except Exception:
+            log.exception("load_snapshot: could not inspect a user")
+    mem, cpu = _mem_percent(), _cpu_percent()
+    data = {
+        "active": active,
+        "servers": servers,
+        "mem": None if mem is None else round(mem, 1),
+        "cpu": None if cpu is None else round(cpu, 1),
+        "window_min": ACTIVE_WINDOW // 60,
+    }
+    _SNAP.update(t=now, data=data)
+    return data
+
+
+class LoadHandler(BaseHandler):
+    """GET /hub/load -> JSON with aggregate load numbers (logged-in users only)."""
+
+    @web.authenticated
+    async def get(self):
+        self.set_header("Content-Type", "application/json")
+        self.set_header("Cache-Control", "no-store")
+        self.finish(json.dumps(load_snapshot(self.users)))
+
+
 class MyNativeAuthenticator(NativeAuthenticator):
     def get_handlers(self, app):
         out = []
@@ -219,6 +355,7 @@ class MyNativeAuthenticator(NativeAuthenticator):
             elif handler is ToggleAuthorizationHandler:
                 handler = ApproveWithMail
             out.append((pattern, handler))
+        out.append((r"/load", LoadHandler))
         return out
 
 

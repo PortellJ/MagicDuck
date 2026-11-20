@@ -1,7 +1,10 @@
 #!/bin/bash
 
-# Limit the maximum amount of virtual memory available
-ulimit -v $((16 * 1024 * 1024))  # in kilobytes (16 GB)
+# Make this server (and the kernels it starts, which inherit the value) the
+# preferred victim if the container runs out of memory, so the kernel's OOM
+# killer picks a user process instead of the hub. Raising the score needs no
+# extra privileges.
+echo 500 > /proc/self/oom_score_adj 2>/dev/null
 
 # Call the original spawner with the same arguments
 exec /opt/jupyterhub/bin/jupyterhub-singleuser "$@"
