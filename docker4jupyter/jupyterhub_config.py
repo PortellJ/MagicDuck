@@ -82,6 +82,10 @@ c.NativeAuthenticator.seconds_before_next_try = 300
 c.NativeAuthenticator.username_pattern = '^[A-Za-z0-9_-]+$'
 
 
+# Automatically log out the users 12 hours after login
+c.JupyterHub.cookie_max_age_days = 0.5   # 12 hours
+
+
 # File in which to write the PID of the proxy process.
 c.ConfigurableHTTPProxy.pid_file = '/var/lib/jupyterhub/jupyterhub-proxy.pid'
 
