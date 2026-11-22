@@ -31,6 +31,8 @@ RUN chmod 700 /etc/jupyterhub/
 
 # Copy the necessary package(s) and example notebooks into a provisional folder
 COPY GaiaMagicDuck.py /opt/shared-files/
+# Also the logos
+COPY logos/ /etc/jupyterhub/logos/
 
 # Copy entry point and additional helper scripts
 COPY entrypoint.sh /opt/jupyterhub/bin/entrypoint.sh
