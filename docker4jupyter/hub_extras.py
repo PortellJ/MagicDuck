@@ -167,7 +167,7 @@ FOOTER_LOGOS = [
     ("dapcom.png", "DAPCOM Data Services", "https://www.dapcom.es/"),
     ("iccub.png", "Institute of Cosmos Sciences of the University of Barcelona (ICCUB)", "https://icc.ub.edu/"),
     ("bsc.png", "Barcelona Supercomputing Center (BSC)", "https://bsc.es/"),
-
+]
 
 def _title_block(intro, with_logo):
     """Centered title (optionally logo + intro line) shown above the login/signup form."""
