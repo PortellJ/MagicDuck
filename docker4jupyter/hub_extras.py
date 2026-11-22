@@ -5,6 +5,7 @@
  3. When the admin approves a user: e-mail to that user.
  4. Stable Linux UIDs/GIDs for users (persisted in uids.json).
  5. Login/signup look: big top-left logo, title, footer logos (see LOGO_* / FOOTER_* below).
+ 6. Signup anti-bot check: honeypot + time trap + simple word-sum question (CAPTCHA_* below).
 
 Everything configurable comes from environment variables (see below), so no
 secrets need to live in the (public) repository.
@@ -24,6 +25,8 @@ Environment variables
 import asyncio
 import csv
 import fcntl
+import hashlib
+import hmac
 import grp
 import html as htmlmod
 import inspect
@@ -32,7 +35,9 @@ import logging
 import mimetypes
 import os
 import pwd
+import random
 import re
+import secrets
 import smtplib
 import ssl
 import subprocess
@@ -59,6 +64,7 @@ SITE_TITLE = "Gaia MagicDuck JupyterHub"
 SITE_INTRO = "You can request an account here, which will need approval by an administrator."
 
 # (form field name, label, kind, required)   kind: "text" | "textarea"
+# ### NOTE: You may wish to adjust these to your needs. ###
 EXTRA_FIELDS = [
     ("full_name", "Full name", "text", True),
     ("affiliation", "Institution / affiliation", "text", True),
@@ -66,6 +72,83 @@ EXTRA_FIELDS = [
 ]
 
 CSV_COLUMNS = ["timestamp", "username", "email"] + [f[0] for f in EXTRA_FIELDS]
+
+# ----------------------------------------------------------- signup anti-bot check
+CAPTCHA_ENABLED = True
+CAPTCHA_MIN_SECONDS = 3      # a form submitted faster than this (after loading) is a bot
+CAPTCHA_MAX_SECONDS = 3600   # a question expires after this long
+_CAPTCHA_KEY = secrets.token_bytes(32)  # per hub process: open questions expire on restart
+_CAPTCHA_USED = {}                      # signature -> expiry time (each question works once)
+_NUM_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+              "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+              "seventeen", "eighteen", "nineteen", "twenty"]
+
+# Inserted into the signup form (before the submit button). The question is fetched from
+# /hub/captcha by JavaScript; "contact_url" is a honeypot field that humans never see.
+CAPTCHA_HTML = """
+<label for="captcha_input">Anti-spam check: what is <b id="captcha_q">&hellip;</b>? *</label>
+<input id="captcha_input" name="captcha_answer" type="text" inputmode="numeric" autocomplete="off" class="form-control" maxlength="4" required>
+<input type="hidden" id="captcha_ts" name="captcha_ts">
+<input type="hidden" id="captcha_sig" name="captcha_sig">
+<div style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden" aria-hidden="true">
+  <label>Leave this field empty <input type="text" name="contact_url" tabindex="-1" autocomplete="off"></label>
+</div>
+<noscript><p class="text-danger">JavaScript is required for the anti-spam check.</p></noscript>
+<script>
+(function () {
+  fetch("{{ base_url }}captcha", {credentials: "same-origin", headers: {"Accept": "application/json"}})
+    .then(function (r) { if (!r.ok) { throw new Error("HTTP " + r.status); } return r.json(); })
+    .then(function (d) {
+      document.getElementById("captcha_q").textContent = d.q;
+      document.getElementById("captcha_ts").value = d.ts;
+      document.getElementById("captcha_sig").value = d.sig;
+    })
+    .catch(function () {
+      document.getElementById("captcha_q").textContent = "(could not load the question: reload the page)";
+    });
+})();
+</script>
+"""
+
+
+def _captcha_sig(ts, answer):
+    return hmac.new(_CAPTCHA_KEY, f"{ts}:{answer}".encode(), hashlib.sha256).hexdigest()
+
+
+def new_captcha():
+    """A fresh question. Stateless: the signed token carries the (hashed) answer."""
+    rng = random.SystemRandom()
+    a, b = rng.randint(1, 10), rng.randint(1, 10)
+    if rng.random() < 0.5:
+        q, ans = f"{_NUM_WORDS[a]} plus {_NUM_WORDS[b]}", a + b
+    else:
+        a, b = max(a, b), min(a, b)
+        q, ans = f"{_NUM_WORDS[a]} minus {_NUM_WORDS[b]}", a - b
+    ts = int(time.time())
+    return {"q": q, "ts": ts, "sig": _captcha_sig(ts, ans)}
+
+
+def captcha_error(answer, ts, sig):
+    """None if the answer is right, else a message for the user. Each question is single
+    use: it is burned on the first attempt, so the 21 possible answers cannot be brute-forced."""
+    try:
+        ts_i = int(ts)
+    except (TypeError, ValueError):
+        return "The anti-spam check is missing: reload the page and try again."
+    now = time.time()
+    for k in [k for k, exp in _CAPTCHA_USED.items() if exp < now]:
+        del _CAPTCHA_USED[k]
+    age = now - ts_i
+    if age < CAPTCHA_MIN_SECONDS:
+        return "That was too fast: please reload the page and fill in the form again."
+    if age > CAPTCHA_MAX_SECONDS or not sig or sig in _CAPTCHA_USED:
+        return "The anti-spam question expired or was already used: reload the page and try again."
+    _CAPTCHA_USED[sig] = ts_i + CAPTCHA_MAX_SECONDS
+    expected = _captcha_sig(ts_i, (answer or "").strip())
+    if not hmac.compare_digest(expected.encode(), sig.encode()):
+        return "The anti-spam answer was incorrect: reload the page to get a new question."
+    return None
+
 
 # ------------------------------------------------------- login / signup look
 LOGIN_INTRO = ""          # optional line under the title on the login page
@@ -78,12 +161,12 @@ LOGO_MIN_HEIGHT = 64      # px: smallest top-left logo on short windows
 FOOTER_ALSO_WHEN_LOGGED_IN = False  # False: footer logos only on login/signup pages
 LOGO_DIR = Path(os.environ.get("FOOTER_LOGO_DIR", "/etc/jupyterhub/logos"))
 # (file inside LOGO_DIR, alt text, link URL or None). Missing files are skipped.
+# ### NOTE: You should configure these to your needs. ###
 FOOTER_LOGOS = [ 
-    ("dpac.png", "Gaia Data Processing and Analysis Consortium (DPAC)", None),
-    ("dapcom.png", "DAPCOM Data Services", None),
-    ("iccub.png", "Institute of Cosmos Sciences of the University of Barcelona (ICCUB)", None),
-    ("bsc.png", "Barcelona Supercomputing Center (BSC)", None),
-]
+    ("dpac.png", "Gaia Data Processing and Analysis Consortium (DPAC)", "https://www.cosmos.esa.int/web/gaia/dpac"),
+    ("dapcom.png", "DAPCOM Data Services", "https://www.dapcom.es/"),
+    ("iccub.png", "Institute of Cosmos Sciences of the University of Barcelona (ICCUB)", "https://icc.ub.edu/"),
+    ("bsc.png", "Barcelona Supercomputing Center (BSC)", "https://bsc.es/"),
 
 
 def _title_block(intro, with_logo):
@@ -129,6 +212,8 @@ def build_signup_template(out_dir):
                 f'class="form-control" maxlength="200"{req}>'
             )
     fields = "\n".join(parts) + "\n"
+    if CAPTCHA_ENABLED:
+        fields += CAPTCHA_HTML
 
     page, n1 = re.subn(r"<form\b", lambda m: header + m.group(0), page, count=1)
     page, n2 = re.subn(
@@ -226,6 +311,19 @@ class SignUpWithExtras(SignUpHandler):
     then logs + notifies if a new account request was actually created."""
 
     async def post(self):
+        if CAPTCHA_ENABLED:
+            if self.get_body_argument("contact_url", "", strip=True):  # honeypot filled in: a bot
+                log.warning("Signup honeypot triggered from %s", self.request.remote_ip)
+                raise web.HTTPError(400, "Signup rejected.")
+            err = captcha_error(
+                self.get_body_argument("captcha_answer", ""),
+                self.get_body_argument("captcha_ts", ""),
+                self.get_body_argument("captcha_sig", ""),
+            )
+            if err:
+                log.info("Signup anti-spam check failed from %s: %s", self.request.remote_ip, err)
+                raise web.HTTPError(400, err)
+
         extras = {n: self.get_body_argument(n, "", strip=True) for n, *_ in EXTRA_FIELDS}
         for name, label, _kind, required in EXTRA_FIELDS:
             if required and not extras[name]:
@@ -255,14 +353,7 @@ class SignUpWithExtras(SignUpHandler):
         except Exception:
             log.exception("Could not write signup CSV")
         lines = [f"{k}: {v}" for k, v in row.items()]
-        url = os.environ.get("HUB_PUBLIC_URL", "")
-        body = (
-                f"New signup request:\n\n"
-                + "\n".join(lines)
-                + "\n\nApprove it in "
-                + (f"{url}")
-                + "/hub/authorize.\n"
-        )
+        body = "New signup request:\n\n" + "\n".join(lines) + "\n\nApprove it in /hub/authorize.\n"
         await send_mail_async(os.environ.get("ADMIN_EMAIL"), f"[JupyterHub] Signup request: {uname}", body)
 
 
@@ -284,9 +375,7 @@ class ApproveWithMail(ToggleAuthorizationHandler):
             body = (
                 f"Hello {after.username},\n\n"
                 "Your account request has been approved. You can now log in"
-                + (f" at:\n{url}\n" if url else ".\n\n")
-                + "\nKindly yours, the Gaia MagicDuck service support team "
-                + "\(gaiamdservice@fqa.ub.edu)\n"
+                + (f" at:\n{url}\n" if url else ".\n")
             )
             await send_mail_async(getattr(after, "email", ""), "Your JupyterHub account was approved", body)
 
@@ -376,13 +465,13 @@ def _footer_html():
         if not (LOGO_DIR / fname).is_file():
             log.warning("Footer logo %s not found in %s; skipped", fname, LOGO_DIR)
             continue
-        img = (f'&nbsp;<img src="{{{{ base_url }}}}footer-logos/{quote(fname)}" alt="{esc(alt, quote=True)}" '
+        img = (f'<img src="{{{{ base_url }}}}footer-logos/{quote(fname)}" alt="{esc(alt, quote=True)}" '
                f'style="height:clamp({min(int(FOOTER_LOGO_MIN_HEIGHT), int(FOOTER_LOGO_HEIGHT))}px,12vh,'
-               f'{int(FOOTER_LOGO_HEIGHT)}px);width:auto;max-width:100%">&nbsp;')
+               f'{int(FOOTER_LOGO_HEIGHT)}px);width:auto;max-width:100%">')
         items.append(f'<a href="{esc(link, quote=True)}" target="_blank" rel="noopener">{img}</a>' if link else img)
     if not items:
         return ""
-    html = ('<br><br><div class="gmd-footer" style="display:flex;flex-wrap:wrap;justify-content:center;'
+    html = ('<div class="gmd-footer" style="display:flex;flex-wrap:wrap;justify-content:center;'
             'align-items:center;gap:1.5rem 2rem;margin:1.5rem 1rem 1rem">' + "".join(items) + "</div>\n")
     return html if FOOTER_ALSO_WHEN_LOGGED_IN else "{% if not user %}" + html + "{% endif %}\n"
 
@@ -572,6 +661,15 @@ class LoadHandler(BaseHandler):
         self.finish(json.dumps(load_snapshot(self.users)))
 
 
+class CaptchaHandler(BaseHandler):
+    """GET /hub/captcha -> a fresh anti-spam question (public: used by the signup form)."""
+
+    async def get(self):
+        self.set_header("Content-Type", "application/json")
+        self.set_header("Cache-Control", "no-store")
+        self.finish(json.dumps(new_captcha()))
+
+
 class FooterLogoHandler(BaseHandler):
     """GET /hub/footer-logos/<file> -> image from LOGO_DIR. Public: the login page needs it."""
 
@@ -597,6 +695,7 @@ class MyNativeAuthenticator(NativeAuthenticator):
             out.append((pattern, handler))
         out.append((r"/load", LoadHandler))
         out.append((r"/footer-logos/([^/]+)", FooterLogoHandler))
+        out.append((r"/captcha", CaptchaHandler))
         return out
 
 
@@ -685,4 +784,3 @@ def pre_spawn_hook(spawner):
             subprocess.run(["runuser", "-u", name, "--", "touch", str(marker)], check=False)
         else:
             log.error("init_home.sh failed for %s (rc=%s)", name, r.returncode)
-
