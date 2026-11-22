@@ -4,6 +4,7 @@
  2. On each new signup: e-mail to the admin + row appended to a CSV (no password).
  3. When the admin approves a user: e-mail to that user.
  4. Stable Linux UIDs/GIDs for users (persisted in uids.json).
+ 5. Login/signup look: big top-left logo, title, footer logos (see LOGO_* / FOOTER_* below).
 
 Everything configurable comes from environment variables (see below), so no
 secrets need to live in the (public) repository.
@@ -18,6 +19,7 @@ Environment variables
   ADMIN_EMAIL       where signup notifications go
   HUB_PUBLIC_URL    shown in the approval mail, e.g. https://example.org/my_public_url_path/
   UID_MIN           first UID handed out to new users, default 10000
+  FOOTER_LOGO_DIR   folder with the footer logo files, default /etc/jupyterhub/logos
 """
 import asyncio
 import csv
@@ -27,6 +29,7 @@ import html as htmlmod
 import inspect
 import json
 import logging
+import mimetypes
 import os
 import pwd
 import re
@@ -38,6 +41,7 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, parseaddr
 from pathlib import Path
+from urllib.parse import quote
 
 import nativeauthenticator
 from nativeauthenticator import NativeAuthenticator
@@ -63,21 +67,52 @@ EXTRA_FIELDS = [
 
 CSV_COLUMNS = ["timestamp", "username", "email"] + [f[0] for f in EXTRA_FIELDS]
 
+# ------------------------------------------------------- login / signup look
+LOGIN_INTRO = ""          # optional line under the title on the login page
+LOGO_HEIGHT_ANON = 128    # px: top-left logo on login/signup pages (None = default size); a MAXIMUM,
+                          # it shrinks on short windows so the page fits without scrolling
+LOGO_HEIGHT_USER = None   # px: top-left logo once logged in (None = default size)
+FOOTER_LOGO_HEIGHT = 64  # px: maximum; shrinks on short windows (never below the minimum)
+FOOTER_LOGO_MIN_HEIGHT = 56  # px
+LOGO_MIN_HEIGHT = 64      # px: smallest top-left logo on short windows
+FOOTER_ALSO_WHEN_LOGGED_IN = False  # False: footer logos only on login/signup pages
+LOGO_DIR = Path(os.environ.get("FOOTER_LOGO_DIR", "/etc/jupyterhub/logos"))
+# (file inside LOGO_DIR, alt text, link URL or None). Missing files are skipped.
+FOOTER_LOGOS = [ 
+    ("dpac.png", "Gaia Data Processing and Analysis Consortium (DPAC)", None),
+    ("dapcom.png", "DAPCOM Data Services", None),
+    ("iccub.png", "Institute of Cosmos Sciences of the University of Barcelona (ICCUB)", None),
+    ("bsc.png", "Barcelona Supercomputing Center (BSC)", None),
+]
+
+
+def _title_block(intro, with_logo):
+    """Centered title (optionally logo + intro line) shown above the login/signup form."""
+    esc = htmlmod.escape
+    logo = '<img src="{{ base_url }}logo" alt="logo" style="max-height:120px">' if with_logo else ""
+    p = f"<p>{esc(intro)}</p>" if intro else ""
+    return f'<div style="text-align:center;margin:1em 0">{logo}<h2>{esc(SITE_TITLE)}</h2>{p}</div>'
+
+
+def _rehome_extends(text):
+    """Make a copy of a NativeAuthenticator page inherit from OUR page.html (banner, big
+    logo, footer) rather than straight from the hub's default one."""
+    return re.sub(r"\{%-?\s*extends\s+[\"']templates/page\.html[\"']\s*-?%\}",
+                  '{% extends "page.html" %}', text, count=1)
+
 
 def build_signup_template(out_dir):
-    """Copy NativeAuthenticator's signup.html to out_dir with logo, title and
-    extra fields injected. Returns out_dir (put it FIRST in template_paths)."""
+    """Write patched copies of NativeAuthenticator's signup, login and page templates
+    into out_dir (put it FIRST in template_paths). Returns out_dir."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    src = Path(nativeauthenticator.__file__).parent / "templates" / "signup.html"
-    page = src.read_text()
-
+    native_dir = Path(nativeauthenticator.__file__).parent / "templates"
     esc = htmlmod.escape
-    header = (
-        '<div style="text-align:center;margin:1em 0">'
-        '<img src="{{ base_url }}logo" alt="logo" style="max-height:120px">'
-        f'<h2>{esc(SITE_TITLE)}</h2><p>{esc(SITE_INTRO)}</p></div>'
-    )
+
+    # --- signup page: title + extra fields
+    page = (native_dir / "signup.html").read_text()
+    # The big logo in the navbar already shows on this page, so don't repeat it here
+    header = _title_block(SITE_INTRO, with_logo=not LOGO_HEIGHT_ANON)
     parts = []
     for name, label, kind, required in EXTRA_FIELDS:
         req = " required" if required else ""
@@ -104,8 +139,23 @@ def build_signup_template(out_dir):
             "Could not patch signup.html (form/submit button not found); "
             "this NativeAuthenticator version needs a manual template."
         )
-    (out_dir / "signup.html").write_text(page)
-    (out_dir / "page.html").write_text(_banner_page(src.parent))  # native page.html + load banner
+    (out_dir / "signup.html").write_text(_rehome_extends(page))
+
+    # --- login page: title above the form
+    login_src = native_dir / "native-login.html"
+    if login_src.exists():
+        login = login_src.read_text()
+        login, n = re.subn(
+            r"<form\b", lambda m: _title_block(LOGIN_INTRO, False) + m.group(0), login, count=1
+        )
+        if not n:
+            log.warning("native-login.html has no <form>; login title not added")
+        (out_dir / "native-login.html").write_text(_rehome_extends(login))
+    else:
+        log.warning("NativeAuthenticator has no native-login.html; login page not customised")
+
+    # --- page.html: NativeAuthenticator's menu entries + load indicator + logo size + footer
+    (out_dir / "page.html").write_text(_banner_page(native_dir))
     return str(out_dir)
 
 
@@ -277,34 +327,78 @@ BANNER_HTML = """{% if user %}
 {% endif %}
 """
 
-# Standalone version (extends the default page.html). Fallback only.
-BANNER_TEMPLATE = (
-    '{% extends "templates/page.html" %}\n{% block nav_bar_left_items %}\n{{ super() }}\n'
-    + BANNER_HTML + "{% endblock %}\n"
-)
-
-
-def _banner_page(native_dir):
-    """Build our page.html from NativeAuthenticator's OWN page.html plus the banner.
-
-    NativeAuthenticator's page.html is what adds the 'Authorize Users' and
-    'Change password' menu entries. A page.html of ours placed earlier in
-    template_paths shadows it, so we must start from its content, not from the
-    hub's default page.html."""
-    native = Path(native_dir) / "page.html"
-    if not native.exists():
-        log.warning("NativeAuthenticator has no page.html; menu entries come from elsewhere")
-        return BANNER_TEMPLATE
-    text = native.read_text()
-    start = re.search(r"\{%-?\s*block\s+nav_bar_left_items\s*-?%\}", text)
-    if start:  # it defines the block: add the item just before the block's end
+def _inject_block(text, name, html):
+    """Add `html` to block `name` of a Jinja child template: before the block's endblock if
+    the template already defines it, otherwise as a new block that keeps the parent's content."""
+    start = re.search(r"\{%-?\s*block\s+" + re.escape(name) + r"\s*-?%\}", text)
+    if start:
         end = re.search(r"\{%-?\s*endblock(?:\s+\w+)?\s*-?%\}", text[start.end():])
         if end:
             pos = start.end() + end.start()
-            return text[:pos] + BANNER_HTML + text[pos:]
-        log.warning("Could not find the end of nav_bar_left_items in NativeAuthenticator's page.html; no load banner")
+            return text[:pos] + html + text[pos:]
+        log.warning("Could not find the end of block %s in NativeAuthenticator's page.html; skipped", name)
         return text
-    return text.rstrip() + "\n{% block nav_bar_left_items %}\n{{ super() }}\n" + BANNER_HTML + "{% endblock %}\n"
+    return text.rstrip() + "\n{% block " + name + " %}\n{{ super() }}\n" + html + "{% endblock %}\n"
+
+
+def _style_html():
+    """CSS for the login/signup pages (logo size, compact layout) and the logged-in logo."""
+    out = ""
+    if LOGO_HEIGHT_ANON:
+        # scales with the window height: 14vh, between the minimum and LOGO_HEIGHT_ANON
+        h = "clamp(%dpx,14vh,%dpx)" % (min(LOGO_MIN_HEIGHT, LOGO_HEIGHT_ANON), LOGO_HEIGHT_ANON)
+        out += ("{% if not user %}<style>#jupyterhub-logo img.jpy-logo{height:" + h + " !important;"
+                "max-height:none !important;width:auto !important;margin:0 !important}</style>{% endif %}\n")
+    # The hub's login box is normally ~80% of the window tall, which pushed the footer
+    # logos below the fold on every window size: let it fit its content instead.
+    out += "{% if not user %}<style>#login-main{height:auto !important;min-height:0 !important}</style>{% endif %}\n"
+    if LOGO_HEIGHT_USER:
+        out += ("{% if user %}<style>#jupyterhub-logo img.jpy-logo{height:" + str(int(LOGO_HEIGHT_USER)) +
+                "px !important;max-height:none !important;width:auto !important;margin:0 !important}"
+                "</style>{% endif %}\n")
+    return out
+
+
+def _footer_html():
+    """Row of institution logos (served by FooterLogoHandler), or "" if none exist."""
+    esc = htmlmod.escape
+    items = []
+    for fname, alt, link in FOOTER_LOGOS:
+        if not (LOGO_DIR / fname).is_file():
+            log.warning("Footer logo %s not found in %s; skipped", fname, LOGO_DIR)
+            continue
+        img = (f'&nbsp;<img src="{{{{ base_url }}}}footer-logos/{quote(fname)}" alt="{esc(alt, quote=True)}" '
+               f'style="height:clamp({min(int(FOOTER_LOGO_MIN_HEIGHT), int(FOOTER_LOGO_HEIGHT))}px,12vh,'
+               f'{int(FOOTER_LOGO_HEIGHT)}px);width:auto;max-width:100%">&nbsp;')
+        items.append(f'<a href="{esc(link, quote=True)}" target="_blank" rel="noopener">{img}</a>' if link else img)
+    if not items:
+        return ""
+    html = ('<br><br><div class="gmd-footer" style="display:flex;flex-wrap:wrap;justify-content:center;'
+            'align-items:center;gap:1.5rem 2rem;margin:1.5rem 1rem 1rem">' + "".join(items) + "</div>\n")
+    return html if FOOTER_ALSO_WHEN_LOGGED_IN else "{% if not user %}" + html + "{% endif %}\n"
+
+
+def _banner_page(native_dir):
+    """Build our page.html from NativeAuthenticator's OWN page.html plus our additions.
+
+    NativeAuthenticator's page.html is what adds the 'Authorize Users' and
+    'Change Password' menu entries. A page.html of ours placed earlier in
+    template_paths shadows it, so we must start from its content, not from the
+    hub's default page.html."""
+    native = Path(native_dir) / "page.html"
+    if native.exists():
+        text = native.read_text()
+    else:
+        log.warning("NativeAuthenticator has no page.html; menu entries come from elsewhere")
+        text = '{% extends "templates/page.html" %}\n'
+    text = _inject_block(text, "nav_bar_left_items", BANNER_HTML)  # load indicator
+    style = _style_html()
+    if style:
+        text = _inject_block(text, "stylesheet", style)            # logo size
+    footer = _footer_html()
+    if footer:
+        text = _inject_block(text, "footer", footer)               # institution logos
+    return text
 
 
 def _read(path):
@@ -469,6 +563,20 @@ class LoadHandler(BaseHandler):
         self.finish(json.dumps(load_snapshot(self.users)))
 
 
+class FooterLogoHandler(BaseHandler):
+    """GET /hub/footer-logos/<file> -> image from LOGO_DIR. Public: the login page needs it."""
+
+    _EXT = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
+
+    async def get(self, name):
+        path = LOGO_DIR / name  # the route pattern excludes "/", so no directory traversal
+        if path.suffix.lower() not in self._EXT or not path.is_file():
+            raise web.HTTPError(404)
+        self.set_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        self.set_header("Cache-Control", "public, max-age=3600")
+        self.finish(path.read_bytes())
+
+
 class MyNativeAuthenticator(NativeAuthenticator):
     def get_handlers(self, app):
         out = []
@@ -479,6 +587,7 @@ class MyNativeAuthenticator(NativeAuthenticator):
                 handler = ApproveWithMail
             out.append((pattern, handler))
         out.append((r"/load", LoadHandler))
+        out.append((r"/footer-logos/([^/]+)", FooterLogoHandler))
         return out
 
 
@@ -567,3 +676,4 @@ def pre_spawn_hook(spawner):
             subprocess.run(["runuser", "-u", name, "--", "touch", str(marker)], check=False)
         else:
             log.error("init_home.sh failed for %s (rc=%s)", name, r.returncode)
+
