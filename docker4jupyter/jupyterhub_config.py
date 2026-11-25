@@ -108,6 +108,16 @@ c.JupyterHub.load_roles = [{
     "services": ["stats"],
 }]
 
+
+# This is to make sure that we don't get notebook errors when DuckDB reports
+# its progress too quickly through ipywidgets.
+# Claude says that a too high limit may freeze the browser, so if you
+# experience problems on this regard, just remove this option and run
+# "SET enable_progress_bar = false" as a DuckDB command in your notebook.
+c.Spawner.args = ["--ServerApp.iopub_msg_rate_limit=10000",
+                          "--ServerApp.rate_limit_window=3.0"]
+
+
 # Path where your users (and you) will find the jupyterhub.
 # ### TO BE CONFIGURED ###
 c.JupyterHub.base_url = '/my_public_url_path'
