@@ -357,10 +357,14 @@ class SignUpWithExtras(SignUpHandler):
             append_signup_csv(row)
         except Exception:
             log.exception("Could not write signup CSV")
+        
+        
         lines = [f"{k}: {v}" for k, v in row.items()]
-        url = os.environ.get("HUB_PUBLIC_URL", "")
-        body = "New signup request:\n\n" + "\n".join(lines) + "\n\nIf applicable, approve it in " + url + "/hub/authorize.\n"
-        await send_mail_async(os.environ.get("ADMIN_EMAIL"), f"[JupyterHub] Signup request: {uname}", body)
+        hub_url = os.environ.get("HUB_PUBLIC_URL", "").rstrip("/")   # no trailing slash
+        body = ("New signup request:\n\n" + "\n".join(lines)
+                + f"\n\nApprove it at {hub_url}/hub/authorize\n")
+        subject = f"[JupyterHub {hub_url}] Signup request: {uname}"
+        await send_mail_async(os.environ.get("ADMIN_EMAIL"), subject, body)
 
 
 class ApproveWithMail(ToggleAuthorizationHandler):
