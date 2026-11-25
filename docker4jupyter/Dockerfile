@@ -26,10 +26,11 @@ RUN /opt/jupyterhub/bin/pip install matplotlib numpy duckdb pandas scipy astropy
 
 # Settings, logo and helper module live in the image (NOT in a mounted volume)
 RUN mkdir -p /etc/jupyterhub /var/lib/jupyterhub
-COPY jupyterhub_config.py hub_extras.py logo.png /etc/jupyterhub/
+COPY jupyterhub_config.py hub_extras.py stats_service.py logo.png /etc/jupyterhub/
 RUN chmod 700 /etc/jupyterhub/
 
 # Copy the necessary package(s) and example notebooks into a provisional folder
+# TODO add here the example notebooks that we'll prepare for DR3, DR4 etc.
 COPY GaiaMagicDuck.py /opt/shared-files/
 # Also the logos
 COPY logos/ /etc/jupyterhub/logos/

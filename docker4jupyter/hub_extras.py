@@ -21,6 +21,8 @@ Environment variables
   HUB_PUBLIC_URL    shown in the approval mail, e.g. https://example.org/my_public_url_path/
   UID_MIN           first UID handed out to new users, default 10000
   FOOTER_LOGO_DIR   folder with the footer logo files, default /etc/jupyterhub/logos
+  (usage statistics: written by stats_service.py into STATE_DIR/stats, shown to admins
+   only at /hub/stats/)
 """
 import asyncio
 import csv
@@ -58,6 +60,7 @@ from tornado import web
 log = logging.getLogger("JupyterHub.hub_extras")
 
 STATE_DIR = Path(os.environ.get("HUB_STATE_DIR", "/var/lib/jupyterhub"))
+STATS_DIR = STATE_DIR / "stats"
 
 # ---------------------------------------------------------------- signup form
 SITE_TITLE = "Gaia MagicDuck JupyterHub"
@@ -86,7 +89,7 @@ _NUM_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "ei
 # Inserted into the signup form (before the submit button). The question is fetched from
 # /hub/captcha by JavaScript; "contact_url" is a honeypot field that humans never see.
 CAPTCHA_HTML = """
-<label for="captcha_input">Anti-spam check: what is <b id="captcha_q">&hellip;</b>? *</label>
+<label for="captcha_input">Anti-spam check:<br> what is <b id="captcha_q">&hellip;</b>? *</label>
 <input id="captcha_input" name="captcha_answer" type="text" inputmode="numeric" autocomplete="off" class="form-control" maxlength="4" required>
 <input type="hidden" id="captcha_ts" name="captcha_ts">
 <input type="hidden" id="captcha_sig" name="captcha_sig">
@@ -108,6 +111,7 @@ CAPTCHA_HTML = """
     });
 })();
 </script>
+<br>
 """
 
 
@@ -155,8 +159,8 @@ LOGIN_INTRO = ""          # optional line under the title on the login page
 LOGO_HEIGHT_ANON = 128    # px: top-left logo on login/signup pages (None = default size); a MAXIMUM,
                           # it shrinks on short windows so the page fits without scrolling
 LOGO_HEIGHT_USER = None   # px: top-left logo once logged in (None = default size)
-FOOTER_LOGO_HEIGHT = 64  # px: maximum; shrinks on short windows (never below the minimum)
-FOOTER_LOGO_MIN_HEIGHT = 56  # px
+FOOTER_LOGO_HEIGHT = 48  # px: maximum; shrinks on short windows (never below the minimum)
+FOOTER_LOGO_MIN_HEIGHT = 32  # px
 LOGO_MIN_HEIGHT = 64      # px: smallest top-left logo on short windows
 FOOTER_ALSO_WHEN_LOGGED_IN = False  # False: footer logos only on login/signup pages
 LOGO_DIR = Path(os.environ.get("FOOTER_LOGO_DIR", "/etc/jupyterhub/logos"))
@@ -166,6 +170,7 @@ FOOTER_LOGOS = [
     ("dpac.png", "Gaia Data Processing and Analysis Consortium (DPAC)", "https://www.cosmos.esa.int/web/gaia/dpac"),
     ("dapcom.png", "DAPCOM Data Services", "https://www.dapcom.es/"),
     ("iccub.png", "Institute of Cosmos Sciences of the University of Barcelona (ICCUB)", "https://icc.ub.edu/"),
+    ("res.png", "Red Española de Supercomputacion (RES)", "https://www.res.es/"),
     ("bsc.png", "Barcelona Supercomputing Center (BSC)", "https://bsc.es/"),
 ]
 
@@ -391,6 +396,7 @@ _SAMPLER = {"started": False, "cb": None}
 # is the one NativeAuthenticator itself extends (for "Authorize Users"), so it is
 # known to be rendered. Errors are shown in the item instead of hiding it.
 BANNER_HTML = """{% if user %}
+{% if user.admin %}<li class="nav-item"><a class="nav-link" href="{{ base_url }}stats/">Usage stats</a></li>{% endif %}
 <li class="nav-item" style="display:flex;align-items:center;margin-left:1.75rem"><span id="gmd-load" class="navbar-text" style="font-size:.85em;padding:0">Server load: &hellip;</span>
 <script>
 (function () {
@@ -684,6 +690,38 @@ class FooterLogoHandler(BaseHandler):
         self.finish(path.read_bytes())
 
 
+class StatsHandler(BaseHandler):
+    """GET /hub/stats/[file] -> pages and plots written by stats_service.py. Admins only."""
+
+    _FILES = {"": "index.html", "index.html": "index.html", "usage-day.png": "usage-day.png",
+              "usage-week.png": "usage-week.png", "usage-month.png": "usage-month.png"}
+
+    @web.authenticated
+    async def get(self, name=""):
+        user = self.current_user
+        if not (user and user.admin):
+            raise web.HTTPError(403)
+        fname = self._FILES.get(name)  # whitelist: nothing else in the directory is reachable
+        path = STATS_DIR / fname if fname else None
+        if path is None or not path.is_file():
+            if fname is None:
+                raise web.HTTPError(404)
+            self.set_status(404)
+            self.set_header("Content-Type", "text/plain; charset=utf-8")
+            return self.finish("No statistics yet. The collector writes its first page about a "
+                               "minute after the hub starts (check that the 'stats' service is configured).")
+        self.set_header("Content-Type", "text/html; charset=utf-8" if fname.endswith(".html")
+                        else "image/png")
+        self.set_header("Cache-Control", "no-store")
+        self.finish(path.read_bytes())
+
+
+class RedirectToStats(BaseHandler):
+    @web.authenticated
+    async def get(self):
+        self.redirect(self.hub.base_url + "stats/")
+
+
 class MyNativeAuthenticator(NativeAuthenticator):
     def get_handlers(self, app):
         out = []
@@ -696,6 +734,8 @@ class MyNativeAuthenticator(NativeAuthenticator):
         out.append((r"/load", LoadHandler))
         out.append((r"/footer-logos/([^/]+)", FooterLogoHandler))
         out.append((r"/captcha", CaptchaHandler))
+        out.append((r"/stats", RedirectToStats))
+        out.append((r"/stats/([^/]*)", StatsHandler))
         return out
 
 

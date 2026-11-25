@@ -90,6 +90,24 @@ c.JupyterHub.cookie_max_age_days = 0.5   # 12 hours
 c.ConfigurableHTTPProxy.pid_file = '/var/lib/jupyterhub/jupyterhub-proxy.pid'
 
 
+# To get some usage statistics
+# NOTE: here we assume that you will have the main data files (.duckdb,
+# .parquet, .csv, etc.) under /data inside the container (which is the
+# default, see run.sh). If you change that, update STATS_WATCH_DIRS
+# accordingly, so that you get stats on the most used/popular files.
+c.JupyterHub.services = [{
+    "name": "stats",
+    "command": [sys.executable, "/etc/jupyterhub/stats_service.py"],
+    "cwd": "/var/lib/jupyterhub",
+    "environment": {"STATS_TZ": "Europe/Madrid", "STATS_WATCH_DIRS": "/data",
+                    "STATS_TITLE": "Gaia MagicDuck usage"},
+}]
+c.JupyterHub.load_roles = [{
+    "name": "stats-collector",
+    "scopes": ["list:users", "read:users:activity", "read:servers"],
+    "services": ["stats"],
+}]
+
 # Path where your users (and you) will find the jupyterhub.
 # ### TO BE CONFIGURED ###
 c.JupyterHub.base_url = '/my_public_url_path'
