@@ -228,7 +228,10 @@ class GaiaMagicDuck:
             query += " group by qra,qdec"
             print("Running query: " + query)
         elif self.skymap_option == 'healpix':
-            query = " select (" + self.hpcol + " >> " + str(self.hp_rsh_bits) + ") as hpix, "
+            if (self.hplev - (self.hp_rsh_bits/2) <= 13):
+                query = " select (" + self.hpcol + " >> " + str(self.hp_rsh_bits) + ")::INT as hpix, "
+            else:
+                query = " select (" + self.hpcol + " >> " + str(self.hp_rsh_bits) + ") as hpix, "
             query += sel + " from " + self.maintable
             if (cond != None):
                 query += " where " + cond
