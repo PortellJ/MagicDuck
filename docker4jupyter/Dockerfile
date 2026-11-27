@@ -24,9 +24,12 @@ RUN python3 -m venv /opt/jupyterhub && \
 RUN /opt/jupyterhub/bin/pip install matplotlib numpy duckdb pandas scipy astropy astroquery datashader healpy pyarrow ipywidgets jupyter-resource-usage && \
    /opt/jupyterhub/bin/pip install --upgrade duckdb
 
+# Allow users to install their own packages
+RUN sed -i 's/^include-system-site-packages = false/include-system-site-packages = true/' /opt/jupyterhub/pyvenv.cfg
+
 # Settings, logo and helper module live in the image (NOT in a mounted volume)
 RUN mkdir -p /etc/jupyterhub /var/lib/jupyterhub
-COPY jupyterhub_config.py hub_extras.py stats_service.py logo.png /etc/jupyterhub/
+COPY jupyterhub_config.py hub_extras.py stats_service.py logo.png terms.txt /etc/jupyterhub/
 RUN chmod 700 /etc/jupyterhub/
 
 # Copy the necessary package(s) and example notebooks into a provisional folder

@@ -76,6 +76,17 @@ EXTRA_FIELDS = [
 
 CSV_COLUMNS = ["timestamp", "username", "email"] + [f[0] for f in EXTRA_FIELDS]
 
+# Mandatory "I agree to the terms" checkbox. The text file is shown at /hub/terms (public).
+TERMS_REQUIRED = True
+TERMS_FILE = Path(os.environ.get("TERMS_FILE", "/etc/jupyterhub/terms.txt"))
+TERMS_HTML = """
+<div class="form-check my-3">
+  <input class="form-check-input" type="checkbox" id="terms_input" name="terms_accepted" value="yes" required>
+  <label class="form-check-label" for="terms_input">I agree to the
+  <a href="{{ base_url }}terms" target="_blank" rel="noopener">terms and conditions</a> of this service *</label>
+</div>
+"""
+
 # ----------------------------------------------------------- signup anti-bot check
 CAPTCHA_ENABLED = True
 CAPTCHA_MIN_SECONDS = 3      # a form submitted faster than this (after loading) is a bot
@@ -217,6 +228,8 @@ def build_signup_template(out_dir):
                 f'class="form-control" maxlength="200"{req}>'
             )
     fields = "\n".join(parts) + "\n"
+    if TERMS_REQUIRED:
+        fields += TERMS_HTML
     if CAPTCHA_ENABLED:
         fields += CAPTCHA_HTML
 
@@ -328,6 +341,9 @@ class SignUpWithExtras(SignUpHandler):
             if err:
                 log.info("Signup anti-spam check failed from %s: %s", self.request.remote_ip, err)
                 raise web.HTTPError(400, err)
+
+        if TERMS_REQUIRED and self.get_body_argument("terms_accepted", "") != "yes":
+            raise web.HTTPError(400, "You must accept the terms and conditions.")
 
         extras = {n: self.get_body_argument(n, "", strip=True) for n, *_ in EXTRA_FIELDS}
         for name, label, _kind, required in EXTRA_FIELDS:
@@ -681,6 +697,19 @@ class CaptchaHandler(BaseHandler):
         self.finish(json.dumps(new_captcha()))
 
 
+class TermsHandler(BaseHandler):
+    """GET /hub/terms -> the terms-and-conditions text file. Public: shown before signup."""
+
+    async def get(self):
+        try:
+            text = TERMS_FILE.read_text(encoding="utf-8")
+        except OSError:
+            raise web.HTTPError(404)
+        self.set_header("Content-Type", "text/plain; charset=utf-8")
+        self.set_header("Cache-Control", "no-cache")
+        self.finish(text)
+
+
 class FooterLogoHandler(BaseHandler):
     """GET /hub/footer-logos/<file> -> image from LOGO_DIR. Public: the login page needs it."""
 
@@ -739,6 +768,7 @@ class MyNativeAuthenticator(NativeAuthenticator):
         out.append((r"/load", LoadHandler))
         out.append((r"/footer-logos/([^/]+)", FooterLogoHandler))
         out.append((r"/captcha", CaptchaHandler))
+        out.append((r"/terms", TermsHandler))
         out.append((r"/stats", RedirectToStats))
         out.append((r"/stats/([^/]*)", StatsHandler))
         return out

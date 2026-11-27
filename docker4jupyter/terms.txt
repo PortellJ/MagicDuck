@@ -1,0 +1,30 @@
+TERMS AND CONDITIONS FOR THE USE OF THE 'GAIA MAGIC DUCK' SERVICE AT THE BSC-CNS
+
+This is a demo of the Gaia 'MagicDuck' data analysis tool, hosted at the Barcelona Supercomputing Center.
+
+It provides access to the Gaia DR4 dataset, for which you MUST take into account its credits and license:
+https://www.cosmos.esa.int/web/gaia-users/credits
+https://www.cosmos.esa.int/web/gaia-users/license
+If you publish results, papers, articles, presentations, etc. based on Gaia DR4 data, you MUST cite it properly. See the URLs above for details.
+In general, it may suffice to add the following: "Credit: ESA, Gaia DPAC"
+Or even better: "Based on data from the Gaia mission (ESA) and DPAC".
+Similarly, if you publish results, papers, articles, presentations, etc. obtained with this service, please acknowledge it properly, such as: "This work has made use of the Gaia MagicDuck data analysis tool developed by DAPCOM/ICCUB and hosted at the BSC-CNS".
+
+This service is provided just as a demo of the capabilities of the 'MagicDuck' tool.
+It runs on relatively modest resources, and its performance may significantly degrade with several active and concurrent users. You may check the service load in the Hub Control Panel (in the File menu once logged in).
+It just provides a small subset of the full Gaia DR4, but you may also use this service, for example, to access the Gaia Archive via AstroQuery and process it in your notebooks.
+
+There is no guarantee that your signup request will be approved.
+In case it is, there is no warranty on the quality, performance or stability of this service. We provide it "as-is", on a best-effort basis and with limited support. In any case, if you repeatedly encounter major problems, feel free to let us know by writing to gaiamdservice at fqa dot ub dot edu.
+You are encouraged to use it as much as you need, for your own research, outreach, education materials, etc.
+We strongly recommend that you regularly download copies of your notebooks, as well as of the data that you may have generated.
+
+The personal, affiliation and motivation data collected through the signup page will be securely stored and not disclosed.
+We may, however, use it (aggregated and anonymized) just for statistical purposes: number of users registered, geographical distribution of users, frequent scientific cases, etc.
+You can request the deletion of your user account and data.
+Only those browser cookies essential to providing service functionality will be written on client machines.
+
+We reserve the right to contact you, via the mail provided during signup, in case we detect that you are excessively overloading this service: please be respectful to other users in the system and do not abuse the limited resources (especially RAM and disk). Please delete any large data file that you may have generated as soon as you do not need it.
+
+We reserve the right to deactivate and even delete your account and deny access to the service if, at any time in the future, there is evidence that you have violated these terms and conditions.
+
